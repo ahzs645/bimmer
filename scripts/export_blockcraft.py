@@ -29,7 +29,7 @@ MAP = {
     "minecraft:stone": "stone",
     "minecraft:gray_concrete": "hardened_clay_stained_gray",
     "minecraft:light_blue_stained_glass": "glass_light_blue",
-    "minecraft:iron_bars": "glass",                       # railing -> clear barrier
+    "minecraft:iron_bars": "iron_block",                  # railing -> solid metal parapet
     "minecraft:stone_bricks": "stonebrick",
     "minecraft:deepslate_tiles": "stone_andesite",
     "minecraft:light_gray_concrete": "hardened_clay_stained_silver",

@@ -303,8 +303,11 @@ def unpack_and_write(winner, grid, out_dir):
     rem = keys - zs * plane
     ys = rem // X
     xs = rem - ys * X
-    # mesh (x, y, z-up) -> Minecraft (x, y-up=z, z=y)
-    mc = np.stack([xs, zs, ys], axis=1)
+    # mesh (x, y, z-up) -> Minecraft (x, y-up=z, z=-y)
+    # Negate the swapped horizontal axis: a bare y<->z swap is orientation-
+    # reversing (det -1) and would mirror the model N<->S. IFC +Y is North,
+    # which is Minecraft -Z, so z = -mesh_y keeps handedness (det +1).
+    mc = np.stack([xs, zs, -ys], axis=1)
     cmin = mc.min(axis=0)
     mc -= cmin
 
