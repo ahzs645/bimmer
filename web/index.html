@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>UNBC · IFC → Voxel Viewer</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+          --text:#e6e9ef; --muted:#9aa3b2; --accent:#5ab0e0; }
+  * { box-sizing: border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--text);
+              font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  #app { position:fixed; inset:0; }
+  canvas { display:block; }
+  #panel { position:absolute; top:12px; left:12px; width:288px; max-height:calc(100% - 24px);
+           overflow:auto; background:rgba(23,26,33,.92); backdrop-filter:blur(8px);
+           border:1px solid var(--line); border-radius:12px; padding:14px 14px 16px; }
+  h1 { font-size:14px; margin:0 0 2px; letter-spacing:.2px; }
+  .sub { color:var(--muted); font-size:11px; margin-bottom:12px; }
+  .row { display:flex; align-items:center; gap:8px; margin:7px 0; }
+  select, button { background:var(--panel2); color:var(--text); border:1px solid var(--line);
+                   border-radius:8px; padding:7px 9px; font-size:12px; width:100%; cursor:pointer; }
+  button:hover, select:hover { border-color:var(--accent); }
+  .btns { display:flex; gap:8px; }
+  .stat { background:var(--panel2); border:1px solid var(--line); border-radius:8px;
+          padding:8px 10px; margin:10px 0; font-size:11.5px; color:var(--muted); }
+  .stat b { color:var(--text); }
+  .legend { margin-top:8px; }
+  .legend h2 { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--muted);
+               margin:12px 0 6px; }
+  .item { display:flex; align-items:center; gap:9px; padding:5px 6px; border-radius:7px; cursor:pointer; }
+  .item:hover { background:var(--panel2); }
+  .item input { accent-color:var(--accent); }
+  .sw { width:14px; height:14px; border-radius:3px; border:1px solid rgba(255,255,255,.18); flex:0 0 auto; }
+  .nm { flex:1; }
+  .ct { color:var(--muted); font-variant-numeric:tabular-nums; font-size:11px; }
+  label.slider { display:block; margin:12px 0 4px; color:var(--muted); font-size:11.5px; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  #hint { position:absolute; bottom:12px; left:12px; color:var(--muted); font-size:11px;
+          background:rgba(23,26,33,.8); border:1px solid var(--line); border-radius:8px; padding:6px 10px; }
+  #loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+             background:rgba(15,17,21,.7); font-size:14px; color:var(--text); z-index:5; }
+  .spin { width:16px; height:16px; border:2px solid var(--line); border-top-color:var(--accent);
+          border-radius:50%; display:inline-block; margin-right:9px; animation:s 0.8s linear infinite; }
+  @keyframes s { to { transform:rotate(360deg); } }
+  a { color:var(--accent); text-decoration:none; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="panel">
+  <h1>UNBC Model · IFC → Voxels</h1>
+  <div class="sub">From <code>UNBC Model … FINAL.ifc</code> · semantic block mapping</div>
+
+  <div class="row"><select id="dataset"></select></div>
+  <div class="btns">
+    <button id="reset">Reset view</button>
+    <button id="ground">Hide grid</button>
+  </div>
+
+  <div class="stat" id="stat">Loading…</div>
+
+  <label class="slider">Height slice: <span id="sliceVal">full</span></label>
+  <input type="range" id="slice" min="1" max="100" value="100" />
+
+  <div class="legend">
+    <h2>Categories</h2>
+    <div id="legend"></div>
+  </div>
+</div>
+<div id="hint">drag = orbit · scroll = zoom · right-drag = pan</div>
+<div id="loading"><span class="spin"></span>Loading model…</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three.module.js",
+  "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const appEl = document.getElementById('app');
+const loadingEl = document.getElementById('loading');
+const statEl = document.getElementById('stat');
+const legendEl = document.getElementById('legend');
+const sliceEl = document.getElementById('slice');
+const sliceValEl = document.getElementById('sliceVal');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.localClippingEnabled = true;
+appEl.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0f1115);
+scene.fog = new THREE.Fog(0x0f1115, 600, 2200);
+
+const camera = new THREE.PerspectiveCamera(55, 1, 0.5, 8000);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+
+scene.add(new THREE.HemisphereLight(0xcfe6ff, 0x202028, 1.05));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+sun.position.set(0.6, 1, 0.4);
+scene.add(sun);
+const sun2 = new THREE.DirectionalLight(0xaaccff, 0.5);
+sun2.position.set(-0.5, 0.4, -0.6);
+scene.add(sun2);
+
+const clipPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), 1e6);
+
+const boxGeo = new THREE.BoxGeometry(0.98, 0.98, 0.98);
+let groupMeshes = [];
+let grid = null;
+let dims = [1, 1, 1];
+
+function clearModel() {
+  for (const m of groupMeshes) { scene.remove(m); m.geometry?.dispose?.(); m.material?.dispose?.(); }
+  groupMeshes = [];
+  if (grid) { scene.remove(grid); grid.geometry.dispose(); grid.material.dispose(); grid = null; }
+}
+
+function fmt(n) { return n.toLocaleString(); }
+
+async function loadDataset(name, label) {
+  loadingEl.style.display = 'flex';
+  loadingEl.querySelector('.spin').nextSibling.textContent = `Loading ${label}…`;
+  await new Promise(r => requestAnimationFrame(r));
+
+  const base = `./data/${name}`;
+  const meta = await (await fetch(`${base}/meta.json`)).json();
+  const buf = await (await fetch(`${base}/voxels.bin`)).arrayBuffer();
+  const dv = new DataView(buf);
+
+  clearModel();
+  dims = meta.dims;
+  const cx = dims[0] / 2, cz = dims[2] / 2;
+
+  // ground grid
+  const span = Math.max(dims[0], dims[2]) * 1.1;
+  grid = new THREE.GridHelper(span, Math.round(span / 10), 0x2a3340, 0x1c232e);
+  grid.position.y = -0.5;
+  scene.add(grid);
+
+  const dummy = new THREE.Object3D();
+  legendEl.innerHTML = '';
+  for (const g of meta.groups) {
+    const color = new THREE.Color(`rgb(${g.rgb[0]},${g.rgb[1]},${g.rgb[2]})`);
+    const transparent = g.opacity < 1;
+    const mat = new THREE.MeshLambertMaterial({
+      color, transparent, opacity: g.opacity,
+      clippingPlanes: [clipPlane], clipShadows: true,
+      depthWrite: !transparent,
+    });
+    const mesh = new THREE.InstancedMesh(boxGeo, mat, g.count);
+    mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    let p = g.offset * meta.record_bytes;
+    for (let i = 0; i < g.count; i++) {
+      const x = dv.getInt16(p, true);
+      const y = dv.getInt16(p + 2, true);
+      const z = dv.getInt16(p + 4, true);
+      p += meta.record_bytes;
+      dummy.position.set(x - cx, y + 0.5, z - cz);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.userData.group = g;
+    if (transparent) mesh.renderOrder = 2;
+    scene.add(mesh);
+    groupMeshes.push(mesh);
+
+    // legend row
+    const row = document.createElement('label');
+    row.className = 'item';
+    row.innerHTML =
+      `<input type="checkbox" checked>
+       <span class="sw" style="background:rgb(${g.rgb[0]},${g.rgb[1]},${g.rgb[2]})"></span>
+       <span class="nm">${g.name}</span>
+       <span class="ct">${fmt(g.count)}</span>`;
+    row.querySelector('input').addEventListener('change', e => { mesh.visible = e.target.checked; });
+    legendEl.appendChild(row);
+  }
+
+  statEl.innerHTML =
+    `<b>${fmt(meta.count)}</b> voxels · grid <b>${dims[0]}×${dims[1]}×${dims[2]}</b><br>` +
+    `1 block = <b>${meta.pitch_m} m</b> · footprint ≈ <b>${Math.round(dims[0]*meta.pitch_m)}×${Math.round(dims[2]*meta.pitch_m)} m</b>`;
+
+  // slice slider in world-Y
+  sliceEl.max = dims[1];
+  sliceEl.value = dims[1];
+  sliceValEl.textContent = 'full';
+  clipPlane.constant = 1e6;
+
+  resetView();
+  loadingEl.style.display = 'none';
+}
+
+function resetView() {
+  const cx = 0, cz = 0;
+  const r = Math.max(dims[0], dims[2]) * 0.62;
+  camera.position.set(cx + r, dims[1] * 3 + r * 0.5, cz + r);
+  controls.target.set(cx, dims[1] * 0.35, cz);
+  controls.update();
+}
+
+// UI wiring
+const datasetSel = document.getElementById('dataset');
+document.getElementById('reset').addEventListener('click', resetView);
+const groundBtn = document.getElementById('ground');
+groundBtn.addEventListener('click', () => {
+  if (grid) { grid.visible = !grid.visible; groundBtn.textContent = grid.visible ? 'Hide grid' : 'Show grid'; }
+});
+sliceEl.addEventListener('input', () => {
+  const v = +sliceEl.value;
+  const full = v >= dims[1];
+  clipPlane.constant = full ? 1e6 : v;
+  sliceValEl.textContent = full ? 'full' : `≤ ${v} blocks`;
+});
+datasetSel.addEventListener('change', () => {
+  const opt = datasetSel.selectedOptions[0];
+  loadDataset(opt.value, opt.textContent);
+});
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+resize();
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// boot
+(async function () {
+  let datasets;
+  try { datasets = await (await fetch('./data/datasets.json')).json(); }
+  catch { datasets = [{ name: 'unbc_1m', label: 'UNBC — 1 m' }]; }
+  for (const d of datasets) {
+    const o = document.createElement('option');
+    o.value = d.name; o.textContent = d.label;
+    datasetSel.appendChild(o);
+  }
+  await loadDataset(datasets[0].name, datasets[0].label);
+})();
+</script>
+</body>
+</html>

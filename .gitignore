@@ -22,3 +22,20 @@ Thumbs.db
 # Local scratch
 /tmp/
 *.log
+
+# Large source exports (reproducible from the RVT via Revit/IFC export)
+*.ifc
+
+# Everything below is reproducible from the IFC by `make all` / scripts/pipeline.py.
+# Keep it out of the repo; regenerate locally.
+/out/
+/web/data/
+
+# BlockCraft: our Apache-2.0 fork lives in /blockcraft and IS tracked.
+# Only ignore its dependencies, build output, and generated world data.
+/blockcraft/**/node_modules/
+/blockcraft/client/dist/
+# building.json is generated from the IFC (export_blockcraft.py)
+/blockcraft/server/building.json
+# world saves (sample worlds + the generated flat world)
+/blockcraft/server/saves/

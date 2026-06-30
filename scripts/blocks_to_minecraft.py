@@ -83,6 +83,20 @@ def write_schem(rows: list[BlockRow], output: Path, version_name: str) -> Path:
     return output
 
 
+def parse_block_state(block: str) -> tuple[str, dict[str, str]]:
+    """Split 'minecraft:oak_door[facing=east,half=lower]' -> (id, {props})."""
+    if "[" not in block:
+        return block, {}
+    base, rest = block.split("[", 1)
+    rest = rest.rstrip("]")
+    props: dict[str, str] = {}
+    for pair in rest.split(","):
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            props[k.strip()] = v.strip()
+    return base.strip(), props
+
+
 def write_litematic(rows: list[BlockRow], output: Path, name: str) -> Path:
     from litemapy import BlockState, Region
 
@@ -93,7 +107,8 @@ def write_litematic(rows: list[BlockRow], output: Path, name: str) -> Path:
     max_z = max(row.z for row in rows)
     region = Region(0, 0, 0, max_x + 1, max_y + 1, max_z + 1)
     for row in rows:
-        region[row.x, row.y, row.z] = BlockState(row.block)
+        base, props = parse_block_state(row.block)
+        region[row.x, row.y, row.z] = BlockState(base, **props) if props else BlockState(base)
 
     schematic = region.as_schematic(name=name)
     schematic.save(str(output))
