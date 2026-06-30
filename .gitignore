@@ -1,0 +1,24 @@
+# Proprietary Revit source model — never commit (large + license/IP)
+*.rvt
+*.rvt.lock
+*.rfa
+*.rte
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local scratch
+/tmp/
+*.log

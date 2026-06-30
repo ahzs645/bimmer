@@ -1,0 +1,22 @@
+{
+  "path": "/Users/ahmadjalil/Downloads/bim to mc/out/tool-tests/threed2vox/duplex_from_ifc.schem",
+  "size_bytes": 385,
+  "root_keys": [
+    "BlockData",
+    "DataVersion",
+    "Height",
+    "Length",
+    "Metadata",
+    "Palette",
+    "PaletteMax",
+    "Version",
+    "Width"
+  ],
+  "root_name": "/Users/ahmadjalil/Downloads/bim to mc/out/tool-tests/threed2vox/duplex_from_ifc.schem",
+  "data_version": 2566,
+  "width": 12,
+  "height": 31,
+  "length": 13,
+  "palette_size": 2,
+  "block_data_bytes": 4836
+}

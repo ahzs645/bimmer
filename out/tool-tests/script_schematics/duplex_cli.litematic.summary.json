@@ -1,0 +1,36 @@
+{
+  "input_csv": "/Users/ahmadjalil/Downloads/bim to mc/out/tool-tests/duplex_voxels/blocks.csv",
+  "output": "/Users/ahmadjalil/Downloads/bim to mc/out/tool-tests/script_schematics/duplex_cli.litematic",
+  "format": "litematic",
+  "block_count": 2124,
+  "original_bounds": {
+    "min_xyz": [
+      0,
+      0,
+      0
+    ],
+    "max_xyz": [
+      9,
+      11,
+      26
+    ]
+  },
+  "normalization_offset_xyz": [
+    0,
+    0,
+    0
+  ],
+  "output_bounds": {
+    "min_xyz": [
+      0,
+      0,
+      0
+    ],
+    "max_xyz": [
+      9,
+      11,
+      26
+    ]
+  },
+  "output_size_bytes": 538
+}

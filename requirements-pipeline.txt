@@ -1,0 +1,6 @@
+ifcopenshell
+litemapy
+mcschematic
+numpy
+scipy
+trimesh

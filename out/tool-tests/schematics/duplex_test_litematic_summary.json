@@ -1,0 +1,14 @@
+{
+  "input_csv": "/Users/ahmadjalil/Downloads/bim to mc/out/tool-tests/duplex_voxels/blocks.csv",
+  "output_litematic": "/Users/ahmadjalil/Downloads/bim to mc/out/tool-tests/schematics/duplex_test.litematic",
+  "block_count_written": 2124,
+  "region_size_xyz": [
+    10,
+    12,
+    27
+  ],
+  "output_size_bytes": 565,
+  "load_back_regions": [
+    "duplex_test"
+  ]
+}

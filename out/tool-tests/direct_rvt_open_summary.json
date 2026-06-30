@@ -1,0 +1,6 @@
+{
+  "rvt": "/Users/ahmadjalil/Downloads/bim to mc/UNBC Model - 2026-06-27 - DRAFT.rvt",
+  "size_bytes": 68640768,
+  "ifcopenshell_open_rvt": "Error: Unable to parse IFC SPF header",
+  "trimesh_load_rvt": "NotImplementedError: file_type 'rvt' not supported"
+}

@@ -1,0 +1,5 @@
+{
+  "path": "/Users/ahmadjalil/Downloads/bim to mc/out/tool-tests/threed2vox/duplex_from_ifc.schem",
+  "size_bytes": 385,
+  "mcschematic_load": "load failed: KeyError: 'WEOffsetX'"
+}
