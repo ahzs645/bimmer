@@ -45,7 +45,8 @@ Thumbs.db
 /renderers/mcweb/node_modules/
 /renderers/mcweb/world/
 /renderers/mcweb/**/*.zip
-# render/ working files (three copies, baked scene, live screenshot)
+# render/ working files (three copies, baked scene, live screenshots).
+# Committed proof images live in renderers/mcweb/docs/, not here.
 /renderers/mcweb/render/three*.js
 /renderers/mcweb/render/scene.json
-/renderers/mcweb/render/render.png
+/renderers/mcweb/render/*.png

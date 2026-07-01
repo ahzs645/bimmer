@@ -120,6 +120,38 @@ stepped ramp) — none of which BlockCraft can draw:
 
 ![real block models rendered from our exported block-states](renderers/mcweb/docs/demo_render.png)
 
+### In the actual renderer
+
+The bake above proves the *models*; these confirm the *whole save* renders in
+the **real prismarine-viewer mesher** — the same renderer minecraft-web-client
+is built on. `render/prismarine_view.js` serves an exported world through
+prismarine-viewer's prebuilt browser bundle and screenshots it in headless
+Chromium/WebGL. (It uses prismarine-viewer's browser mesher, not the full
+minecraft-web-client app, because the node-side viewer needs native `canvas`/`gl`
+that don't build headless — the browser bundle is the same rendering code the
+app ships.)
+
+The real **UNBC building** (167,578 blocks) — real `oak_door`s in the doorways,
+`oak_fence` railings, and smooth-stone-slab floors:
+
+![UNBC building in the prismarine-viewer mesher](renderers/mcweb/docs/mesher_building.png)
+
+The **demo house** — `oak_fence` roof railing and a stained-glass window band:
+
+![demo house in the mesher](renderers/mcweb/docs/mesher_demo.png)
+
+An isolated **staircase** — the oriented `stone_brick_stairs` the voxelizer
+emits, rendered as real stepped stair models (not cubes):
+
+![staircase in the mesher](renderers/mcweb/docs/mesher_stairs.png)
+
+Reproduce (world must be exported with `--version 1.20.1`, a bundle-supported version):
+
+```sh
+node export_anvil.js ../../out/unbc_1m/blocks.csv --out /tmp/unbc_pv --version 1.20.1
+node render/prismarine_view.js /tmp/unbc_pv --center 56,12,296 --view 12 --out shot.png
+```
+
 ## Other renderers considered (not wired up)
 
 - **deepslate / lodestone** — libraries that render Minecraft *structures* with
