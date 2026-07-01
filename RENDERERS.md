@@ -131,8 +131,14 @@ minecraft-web-client app, because the node-side viewer needs native `canvas`/`gl
 that don't build headless — the browser bundle is the same rendering code the
 app ships.)
 
-The real **UNBC building** (167,578 blocks) — real `oak_door`s in the doorways,
-`oak_fence` railings, and smooth-stone-slab floors:
+A doorway at **eye level** — the `oak_door` renders as a real door (panel
+detail + handle), flanked by stained-glass windows:
+
+![oak door front-on in the mesher](renderers/mcweb/docs/mesher_door.png)
+
+The real **UNBC building** (167,578 blocks) from above — walls, doorways,
+`oak_fence` railings and smooth-stone-slab floors across the footprint (an
+aerial overview, so the doors read as panels set in the walls):
 
 ![UNBC building in the prismarine-viewer mesher](renderers/mcweb/docs/mesher_building.png)
 
