@@ -100,6 +100,17 @@ function writeLevelDat(worldDir, opts, registry) {
         value: {
           version: int(19133),
           DataVersion: int(dataVersion),
+          // minecraft-web-client (and vanilla) read the world version from
+          // Data.Version.Name; without it the client falls back to 1.8.8 and
+          // mis-parses the (flattened, 1.18+) chunks -> "reading 'Sections'".
+          Version: {
+            type: 'compound',
+            value: {
+              Id: int(dataVersion),
+              Name: { type: 'string', value: opts.version },
+              Snapshot: byte(0),
+            },
+          },
           LevelName: { type: 'string', value: opts.name },
           GameType: int(1), // creative
           allowCommands: byte(1),

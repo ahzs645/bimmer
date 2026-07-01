@@ -226,18 +226,29 @@ def place_doors(winner, grid, door_verts, mode):
     """
     all_min, dims = grid["all_min"], grid["dims"]
     X, plane, pitch = grid["X"], grid["plane"], grid["pitch"]
-    placed = 0
 
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    # A real door is exactly door_h cells tall (2 at 1 m, ~4 at 0.5 m).
+    door_h = max(2, round(2.0 / pitch))
+
+    def door_state(facing, half, hinge):
+        return (f"{DOOR_BLOCK}[facing={facing},half={half},"
+                f"hinge={hinge},open=false,powered=false]")
+
+    # PASS 1: carve every opening to air FIRST. Clearing all openings before
+    # placing any leaf is essential — adjacent doorways share cells, so a
+    # per-door "clear then place" lets one door's carve wipe a neighbour's
+    # freshly placed leaf (leaving half-height, upper-less doors).
+    plans = []          # functional-door placement, resolved in pass 2
+    placed = 0
     for d in door_verts:
         v = d["verts"]
         idx = np.clip(np.round((v - all_min) / pitch).astype(np.int64), 0, dims - 1)
         # mesh index space: axis0=x, axis1=y(plan), axis2=z(up)
-        mnx, mny, mnz = idx.min(axis=0)
-        mxx, mxy, mxz = idx.max(axis=0)
-        wx, wy = (mxx - mnx + 1), (mxy - mny + 1)
-
-        def key(x, y, z):
-            return int(x) + X * int(y) + plane * int(z)
+        mnx, mny, mnz = (int(a) for a in idx.min(axis=0))
+        mxx, mxy, mxz = (int(a) for a in idx.max(axis=0))
 
         if mode == "solid":
             for x in range(mnx, mxx + 1):
@@ -266,8 +277,6 @@ def place_doors(winner, grid, door_verts, mode):
         ey_m = float(v[:, 1].max() - v[:, 1].min())
         thin_x = ex_m <= ey_m
         facing = "east" if thin_x else "south"  # east -> faces +/-x, south -> faces +/-z
-        lower = f"{DOOR_BLOCK}[facing={facing},half=lower,hinge=left,open=false,powered=false]"
-        upper = f"{DOOR_BLOCK}[facing={facing},half=upper,hinge=left,open=false,powered=false]"
         wide_lo, wide_hi = (mny, mxy) if thin_x else (mnx, mxx)
         wide_cells = wide_hi - wide_lo + 1
         # Fill the opening width with door cells (OverallWidth in cells, pitch-aware:
@@ -277,38 +286,85 @@ def place_doors(winner, grid, door_verts, mode):
         mid = (wide_lo + wide_hi) // 2
         start = max(wide_lo, mid - (n_leaves - 1) // 2)
         coords = [min(start + i, wide_hi) for i in range(n_leaves)]
-        # A real door: ~2 m tall, standing ON the floor (not filling the whole
-        # opening). Anchor the bottom to the actual floor by probing the room
-        # cells beside the doorway (along the walk/normal direction), then build
-        # up door_h cells (2 at 1 m, ~4 at 0.5 m), capped to the opening top.
-        door_h = max(2, round(2.0 / pitch))
-
-        def floor_under(cx, cy):
-            probes = [(cx - 1, cy), (cx + 1, cy)] if thin_x else [(cx, cy - 1), (cx, cy + 1)]
-            found = []
-            for px, py in probes:
-                for cz in range(mnz + 2, mnz - 4, -1):
-                    if key(px, py, cz) in winner:
-                        found.append(cz)
-                        break
-            return min(found) if found else None  # min = the floor, not a wall-top
-
-        def place_leaf(cx, cy):
-            fz = floor_under(cx, cy)
-            bottom = (fz + 1) if fz is not None else mnz
-            top = min(bottom + door_h - 1, mxz)
-            for i, cz in enumerate(range(bottom, top + 1)):
-                winner[key(cx, cy, cz)] = (100, lower if i == 0 else upper)
-
-        if thin_x:
-            cx = (mnx + mxx) // 2
-            for cy in coords:
-                place_leaf(cx, cy)
-        else:
-            cy = (mny + mxy) // 2
-            for cx in coords:
-                place_leaf(cx, cy)
+        fixed = (mnx + mxx) // 2 if thin_x else (mny + mxy) // 2
+        plans.append((thin_x, facing, mnz, fixed, coords))
         placed += 1
+
+    if mode in ("solid", "air"):
+        return placed
+
+    # PASS 2: with every opening carved, anchor each leaf to the room floor and
+    # build a door_h-tall, correctly hinged door.
+    def floor_top(thin_x, cx, cy, mnz):
+        # Probe the room cells to either side ALONG THE WALL NORMAL (never along
+        # the wall itself, solid at every height) for the highest floor top near
+        # the sill. Scanning up to mnz+1 also lifts doors whose mesh bottom dips a
+        # cell into the slab (the "half-sunk into the floor" case). Returns None
+        # when no floor voxel is nearby (e.g. a glazed curtain wall).
+        probes = [(cx - 1, cy), (cx + 1, cy)] if thin_x else [(cx, cy - 1), (cx, cy + 1)]
+        best = None
+        for px, py in probes:
+            for cz in range(mnz + 1, mnz - 4, -1):
+                w = winner.get(key(px, py, cz))
+                if w and "_door" not in w[1]:
+                    best = cz if best is None else max(best, cz)
+                    break
+        return best
+
+    for thin_x, facing, mnz, fixed, coords in plans:
+        for wv in coords:
+            cx, cy = (fixed, wv) if thin_x else (wv, fixed)
+            ft = floor_top(thin_x, cx, cy, mnz)
+            bottom = (ft + 1) if ft is not None else mnz
+            for j in range(door_h):
+                winner[key(cx, cy, bottom + j)] = (
+                    100, door_state(facing, "lower" if j == 0 else "upper", "left"))
+            # Threshold: never leave a door hanging over a hole (the carve above
+            # removes the slab under the leaf). Drop a floor block if the cell
+            # directly below the leaf is empty.
+            below = key(cx, cy, bottom - 1)
+            if below not in winner:
+                winner[below] = (50, FLOOR_CUBE)
+
+    # PASS 3: mirror double-door hinges. A run of adjacent same-facing lower
+    # halves at the same height is one visual double door — even when the leaves
+    # come from SEPARATE IfcDoor elements (each a single leaf, which pass 2 left
+    # all-hinge=left). Re-hinge each run so the panels meet in the middle. East
+    # doors run along grid-y, south doors along grid-x; uppers copy their lower.
+    def set_hinge(blockstr, hinge):
+        return blockstr.replace("hinge=left", f"hinge={hinge}").replace("hinge=right", f"hinge={hinge}")
+
+    runs_axis = defaultdict(list)   # (facing, perp_fixed, cz) -> [wide coord, ...]
+    for k, (_, b) in winner.items():
+        if "_door" not in b or "half=lower" not in b:
+            continue
+        z = k // plane
+        rem = k - z * plane
+        y = rem // X
+        x = rem - y * X
+        if "facing=east" in b:
+            runs_axis[("east", int(x), int(z))].append(int(y))
+        else:
+            runs_axis[("south", int(y), int(z))].append(int(x))
+
+    for (fc, perp, z), wides in runs_axis.items():
+        wides.sort()
+        run = [wides[0]]
+        for c in wides[1:] + [None]:
+            if c is not None and c == run[-1] + 1:
+                run.append(c)
+                continue
+            L = len(run)
+            if L >= 2:  # single leaves keep the default hinge
+                for i, w in enumerate(run):
+                    hinge = "right" if i < L // 2 else "left"
+                    cx, cy = (perp, w) if fc == "east" else (w, perp)
+                    for j in range(door_h):
+                        kk = key(cx, cy, z + j)
+                        cur = winner.get(kk)
+                        if cur and "_door" in cur[1]:
+                            winner[kk] = (cur[0], set_hinge(cur[1], hinge))
+            run = [] if c is None else [c]
 
     return placed
 

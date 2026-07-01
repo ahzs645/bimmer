@@ -45,10 +45,12 @@ case "$cmd" in
     node "$here/verify_save.js" "$world"
     ;;
   pack)
-    world="${1:-$here/world}"
-    zip="${world%/}.zip"
-    ( cd "$(dirname "$world")" && rm -f "$zip" && zip -qr "$zip" "$(basename "$world")" )
-    echo "packed -> $zip"
+    world="${1:-$here/world}"; world="${world%/}"
+    dir="$(cd "$(dirname "$world")" && pwd)"; base="$(basename "$world")"
+    # zip name is relative to $dir (we cd into it), so use the basename only —
+    # passing a path with dir components would resolve wrong from inside $dir.
+    ( cd "$dir" && rm -f "$base.zip" && zip -qr "$base.zip" "$base" )
+    echo "packed -> $dir/$base.zip"
     echo "load it at https://mcraft.fun  (Menu -> Open World -> drop the zip)"
     ;;
   all)
