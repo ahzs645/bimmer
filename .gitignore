@@ -39,3 +39,13 @@ Thumbs.db
 /blockcraft/server/building.json
 # world saves (sample worlds + the generated flat world)
 /blockcraft/server/saves/
+
+# minecraft-web-client renderer (/renderers/mcweb): tracked tooling, but deps
+# and generated artifacts are not. The demo render lives in docs/ (committed).
+/renderers/mcweb/node_modules/
+/renderers/mcweb/world/
+/renderers/mcweb/**/*.zip
+# render/ working files (three copies, baked scene, live screenshot)
+/renderers/mcweb/render/three*.js
+/renderers/mcweb/render/scene.json
+/renderers/mcweb/render/render.png

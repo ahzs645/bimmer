@@ -1,0 +1,39 @@
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;background:#afcbe3}</style>
+<script type="importmap">{"imports":{"three":"./three.module.min.js"}}</script></head>
+<body><script type="module">
+import * as THREE from 'three'
+const scene = await (await fetch('./scene.json')).json()
+const W=900,H=520
+const renderer=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true})
+renderer.setSize(W,H); document.body.appendChild(renderer.domElement)
+const sc=new THREE.Scene(); sc.background=new THREE.Color('#afcbe3')
+const cam=new THREE.PerspectiveCamera(35,W/H,0.1,100)
+cam.position.set(12,8,13); cam.lookAt(5.5,0.7,0)
+sc.add(new THREE.AmbientLight(0xffffff,0.75))
+const dl=new THREE.DirectionalLight(0xffffff,0.85); dl.position.set(6,12,8); sc.add(dl)
+const dl2=new THREE.DirectionalLight(0xffffff,0.35); dl2.position.set(-5,4,-6); sc.add(dl2)
+// ground grid
+const grid=new THREE.GridHelper(24,24,0x557799,0x88aacc); grid.position.set(6,-0.001,0); sc.add(grid)
+// one cuboid element, rotated about the block centre by its own MC yRot/xRot
+function elementMesh(e,color,opacity){
+  const s=[(e.to[0]-e.from[0])/16,(e.to[1]-e.from[1])/16,(e.to[2]-e.from[2])/16]
+  const c=[(e.from[0]+e.to[0])/32-0.5,(e.from[1]+e.to[1])/32-0.5,(e.from[2]+e.to[2])/32-0.5] // rel. block centre
+  const g=new THREE.BoxGeometry(Math.max(s[0],1e-3),Math.max(s[1],1e-3),Math.max(s[2],1e-3))
+  const m=new THREE.MeshStandardMaterial({color,transparent:opacity<1,opacity,roughness:0.85,metalness:0.0})
+  const mesh=new THREE.Mesh(g,m); mesh.position.set(c[0],c[1],c[2])
+  const edges=new THREE.LineSegments(new THREE.EdgesGeometry(g),new THREE.LineBasicMaterial({color:0x333333,transparent:true,opacity:0.35}))
+  edges.position.copy(mesh.position)
+  const grp=new THREE.Group(); grp.add(mesh); grp.add(edges) // origin = block centre
+  grp.rotation.y=-(e.yRot||0)*Math.PI/180  // MC y-rotation (clockwise from top)
+  if(e.xRot) grp.rotation.x=-(e.xRot)*Math.PI/180
+  return grp
+}
+for(const b of scene){
+  const parent=new THREE.Group()
+  for(const e of b.elements) parent.add(elementMesh(e,b.color,b.opacity))
+  parent.position.set(b.pos[0]+0.5, b.pos[1]+0.5, b.pos[2]+0.5)
+  sc.add(parent)
+}
+renderer.render(sc,cam)
+window.__ready=true
+</script></body></html>

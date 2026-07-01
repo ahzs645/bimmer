@@ -33,9 +33,11 @@ table, functional doors, per-stage reference, and Minecraft import instructions.
 | `scripts/export_web.py`, `web/` | interactive Three.js viewer |
 | `scripts/render_voxels.py` | static iso / plan / elevation PNG previews |
 | `scripts/inspect_ifc.py` | fast structural probe of an IFC |
+| `renderers/mcweb/` | export the building to a Java world save for the **minecraft-web-client** renderer (real doors/stairs/slabs/fences) |
 | `Makefile` | `setup` / `p1` / `p05` / `all` / `viewer` / `clean` |
 | **[PIPELINE.md](PIPELINE.md)** | full design + usage docs |
 | **[BLOCKCRAFT.md](BLOCKCRAFT.md)** | walk the building in a browser (BlockCraft, flat world) |
+| **[RENDERERS.md](RENDERERS.md)** | the two walkable browser renderers compared (BlockCraft vs minecraft-web-client) |
 | **[PRIOR_ART.md](PRIOR_ART.md)** | researched survey of existing IFC/BIM→Minecraft work |
 | `TESTED_OPTIONS.md` | log of tools evaluated while building this |
 

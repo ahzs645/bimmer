@@ -12,7 +12,8 @@ What this does beyond a plain mesh voxelizer:
   voxel grid, resolving overlaps with a per-class priority rule.
 * FUNCTIONAL DOORS: every IfcDoor becomes a real, openable `minecraft:*_door`
   (two halves, oriented to the wall) sitting in a walk-through opening, instead
-  of a solid block plugging the doorway. IfcRailing -> iron_bars.
+  of a solid block plugging the doorway. IfcRailing -> oak_fence (renders as a
+  real post-and-rail fence; swap CLASS_BLOCKS["railing"] for another *_fence).
 
 Geometry note: IfcOpenShell returns vertices in METRES regardless of the file's
 display unit, so --pitch is in metres (pitch=1.0 -> 1 block per metre).
@@ -71,7 +72,7 @@ DOOR_TYPES = {"IfcDoor"}
 CLASS_BLOCKS = {
     "glass": "minecraft:light_blue_stained_glass",
     "frame": "minecraft:gray_concrete",
-    "railing": "minecraft:iron_bars",
+    "railing": "minecraft:oak_fence",
     "wall": "minecraft:white_concrete",
     "structure": "minecraft:stone",
     "floor": "minecraft:smooth_stone",
