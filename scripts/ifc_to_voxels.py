@@ -10,6 +10,10 @@ What this does beyond a plain mesh voxelizer:
 * Maps each IFC element category to a sensible Minecraft block (glass for
   glazing, concrete for walls, smooth stone for slabs, ...) on a shared integer
   voxel grid, resolving overlaps with a per-class priority rule.
+* REAL STAIRS: stepped stair-class cubes are refined into oriented
+  `minecraft:*_stairs` blocks (facing from the ascent direction); thin floor
+  plates can become `*_slab`s with --floor-slabs. Both render as real block
+  models in the minecraft-web-client renderer (see RENDERERS.md).
 * FUNCTIONAL DOORS: every IfcDoor becomes a real, openable `minecraft:*_door`
   (two halves, oriented to the wall) sitting in a walk-through opening, instead
   of a solid block plugging the doorway. IfcRailing -> oak_fence (renders as a
@@ -90,6 +94,19 @@ CLASS_PRIORITY = [
 
 # Minecraft block id used for functional doors (must be a *_door)
 DOOR_BLOCK = "minecraft:oak_door"
+
+# Refinement targets: the cube block a class voxelizes to -> its real shaped
+# block-state. Stairs replace the stepped `stair`-class cubes; slabs replace
+# thin single-voxel `floor`-class plates. Both render as real models in the
+# minecraft-web-client renderer (see RENDERERS.md).
+STAIR_CUBE = CLASS_BLOCKS["stair"]           # minecraft:stone_bricks
+STAIR_SHAPED = "minecraft:stone_brick_stairs"
+FLOOR_CUBE = CLASS_BLOCKS["floor"]           # minecraft:smooth_stone
+SLAB_SHAPED = "minecraft:smooth_stone_slab"
+
+# grid horizontal ascent (dx, dy in plan) -> Minecraft stair `facing`
+# (verified against the unpack transform mc = [x, z_up, -y]).
+GRID_TO_FACING = {(1, 0): "east", (-1, 0): "west", (0, 1): "north", (0, -1): "south"}
 
 
 def class_for(ifc_type: str) -> str:
@@ -296,6 +313,72 @@ def place_doors(winner, grid, door_verts, mode):
     return placed
 
 
+def refine_stairs(winner, grid):
+    """Replace stepped `stair`-class cubes with oriented Minecraft stair blocks.
+
+    A voxelized staircase is a stepped ramp of cubes. For each stair cube whose
+    top is exposed (nothing directly above), we look at the four horizontal
+    neighbours: the direction whose column rises (a cube one level up) is the
+    ascent direction, which is exactly the Minecraft stair `facing`. Cells with
+    no rise (flat landings) or rises on 3+/opposite sides (ridges) stay full
+    cubes. Underside cubes keep their block (something sits above them).
+    Returns the number of cubes converted.
+    """
+    X, plane = grid["X"], grid["plane"]
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    occupied = set(winner.keys())
+    stair_keys = [k for k, (_, b) in winner.items() if b == STAIR_CUBE]
+    converted = 0
+    for k in stair_keys:
+        z = k // plane
+        rem = k - z * plane
+        y = rem // X
+        x = rem - y * X
+        if key(x, y, z + 1) in occupied:           # top not exposed -> underside cube
+            continue
+        rises = [(dx, dy) for (dx, dy) in GRID_TO_FACING
+                 if key(x + dx, y + dy, z + 1) in occupied]
+        if not rises or len(rises) >= 3:            # flat landing / ridge -> leave cube
+            continue
+        # prefer the rise whose opposite (downhill) side is open tread
+        facing_dir = next((d for d in rises if key(x - d[0], y - d[1], z) not in occupied), rises[0])
+        facing = GRID_TO_FACING[facing_dir]
+        winner[k] = (winner[k][0], f"{STAIR_SHAPED}[facing={facing},half=bottom,shape=straight]")
+        converted += 1
+    return converted
+
+
+def refine_floor_slabs(winner, grid):
+    """Convert thin, single-voxel `floor`-class plates to bottom slabs.
+
+    A floor plate that is one voxel thick with air directly above and below
+    (e.g. a balcony/landing plate, not a thick structural slab resting on
+    something) is half-height in reality; a full cube over-thickens it. Floors
+    that sit on structure (cube below) or stack (cube above) stay full.
+    Returns the number of cubes converted.
+    """
+    X, plane = grid["X"], grid["plane"]
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    occupied = set(winner.keys())
+    floor_keys = [k for k, (_, b) in winner.items() if b == FLOOR_CUBE]
+    converted = 0
+    for k in floor_keys:
+        z = k // plane
+        rem = k - z * plane
+        y = rem // X
+        x = rem - y * X
+        if key(x, y, z + 1) not in occupied and key(x, y, z - 1) not in occupied:
+            winner[k] = (winner[k][0], f"{SLAB_SHAPED}[type=bottom]")
+            converted += 1
+    return converted
+
+
 def unpack_and_write(winner, grid, out_dir):
     X, plane, pitch = grid["X"], grid["plane"], grid["pitch"]
     keys = np.fromiter(winner.keys(), dtype=np.int64, count=len(winner))
@@ -334,6 +417,10 @@ def main() -> None:
     ap.add_argument("--pitch", type=float, default=1.0, help="Voxel size in METRES")
     ap.add_argument("--doors", choices=["functional", "air", "solid"], default="functional",
                     help="how to represent IfcDoor (default: functional openable door)")
+    ap.add_argument("--stairs", choices=["real", "cube"], default="real",
+                    help="'real' = oriented *_stairs blocks (default); 'cube' = stepped stone-brick cubes")
+    ap.add_argument("--floor-slabs", action="store_true",
+                    help="convert thin single-voxel floor plates to bottom slabs (default: full cubes)")
     ap.add_argument("--fill", action="store_true",
                     help="Solid-fill each class (rarely wanted; meaningless for non-watertight IFC)")
     ap.add_argument("--out-dir", type=Path, default=Path("out/unbc"))
@@ -356,6 +443,15 @@ def main() -> None:
     winner, grid, per_class = voxelize_solids(meshes, door_verts, args.pitch, args.fill)
     placed = place_doors(winner, grid, door_verts, args.doors)
     print(f"Placed {placed} {args.doors} doors", flush=True)
+
+    stairs_converted = slabs_converted = 0
+    if args.stairs == "real":
+        stairs_converted = refine_stairs(winner, grid)
+        print(f"Refined {stairs_converted} stair cubes -> oriented stairs", flush=True)
+    if args.floor_slabs:
+        slabs_converted = refine_floor_slabs(winner, grid)
+        print(f"Refined {slabs_converted} thin floor cubes -> slabs", flush=True)
+
     write_stats = unpack_and_write(winner, grid, out_dir)
 
     summary = {
@@ -364,6 +460,9 @@ def main() -> None:
         "pitch_m": args.pitch,
         "door_mode": args.doors,
         "doors_placed": placed,
+        "stairs_mode": args.stairs,
+        "stairs_converted": stairs_converted,
+        "slabs_converted": slabs_converted,
         "world_bounds_min_m": grid["all_min"].tolist(),
         "model_size_m_xyz": (grid["dims"] * args.pitch).tolist(),
         **ex_stats,

@@ -75,46 +75,48 @@ For a real building, point it at the pipeline output:
 ### Verified
 
 `verify_save.js` round-trips the exported save through the client's own Anvil
-loader and reports which shapes survived. On the **real UNBC building** (`make
-p1` → 167,585 blocks, 375 chunks):
+loader and reports which shapes survived. On the **real UNBC building**
+(`ifc_to_voxels.py --pitch 1.0 --floor-slabs` → 167,578 blocks, 375 chunks):
 
 ```
 PASS  functional doors round-trip  (halves=lower/upper, facings=east/south)
-  --   real stair block-states: absent in this model
-  --   real slabs: absent in this model
+PASS  real stair block-states: 569 blocks
+PASS  real slabs: 48307 blocks
 PASS  fence railings: 2409 blocks
 PASS  stained-glass glazing: 2710 blocks
 all required checks passed
 ```
 
-and on the **demo fixture** (which exercises every shape the exporter handles):
+The 569 stairs carry all four facings (199 east / 127 north / 74 south / 169
+west) — each staircase oriented by its own ascent direction. (Drop `--floor-slabs`
+to keep floors as full `smooth_stone`; stairs are on by default.)
 
-```
-PASS  functional doors round-trip  (halves=lower/upper, facings=north)
-PASS  real stair block-states: 2 blocks
-PASS  real slabs: 49 blocks
-PASS  stained-glass glazing: 19 blocks
-all required checks passed
-```
+### Real stairs and slabs from the voxelizer
 
-### What the current pipeline emits (and the stairs/slabs gap)
+A voxelized staircase is a stepped ramp of cubes. `scripts/ifc_to_voxels.py`
+now post-processes the grid (`--stairs real`, the default) to turn each exposed
+stair-class cube into an **oriented `*_stairs` block**: it reads the four
+horizontal neighbours, and the direction whose column rises one level is the
+Minecraft `facing` (flat landings and ridges stay full cubes). So a real
+staircase renders as actual stairs, not stepped cubes. `--stairs cube` restores
+the old behaviour.
 
-The **exporter and renderer fully support** real stairs and slabs — the demo
-fixture proves both round-trip and render (see the image below). But the
-**voxelizer** (`scripts/ifc_to_voxels.py`) doesn't emit them yet: it maps
-`IfcStair → minecraft:stone_bricks` (cubes) and floors → `minecraft:smooth_stone`
-(cubes), a carry-over from the cube-only BlockCraft era. So a real building
-currently renders stairs as stepped stone-brick cubes here too — *not* an
-exporter limit. Emitting true `*_stairs[facing,half,shape]` / `*_slab[type]`
-block-states needs per-cell orientation from the voxelizer; it's the natural
-next enhancement now that a renderer can display them. (Doors, glass, concrete
-and the new `oak_fence` railings already flow through as real block-states.)
+Thin, single-voxel **floor plates** (air above *and* below — balconies/landings,
+not thick structural slabs) become `*_slab[type=bottom]` with `--floor-slabs`.
+It's opt-in because a 1 m voxelization can't otherwise tell a half-slab from a
+full block; thick floors that sit on structure stay full cubes.
+
+Doors, glass, concrete and `oak_fence` railings already flow through as real
+block-states, so with real stairs the whole palette now renders as true
+Minecraft models in this renderer. (Corner stairs use `shape=straight`; explicit
+`inner/outer` mitering is a possible future refinement.)
 
 `render/` bakes the **real vanilla block models** for those states and
 renders them headlessly (Chromium/WebGL — the same three.js pipeline the client
 uses). Left→right: concrete cube, translucent glass, a **thin two-high door
-panel**, a **stepped stair**, a **half-height slab**, and a **post-and-rail
-fence** — none of which BlockCraft can draw:
+panel**, a **half-height slab**, a **post-and-rail fence**, and a **real
+staircase run** (three oriented `*_stairs` — what the voxelizer emits from a
+stepped ramp) — none of which BlockCraft can draw:
 
 ![real block models rendered from our exported block-states](renderers/mcweb/docs/demo_render.png)
 

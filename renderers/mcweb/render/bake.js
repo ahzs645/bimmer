@@ -48,9 +48,13 @@ const placements=[
   ['minecraft:light_blue_stained_glass', [2,0,0]],
   ['minecraft:oak_door[facing=north,half=lower,hinge=left,open=false]', [4,0,0]],
   ['minecraft:oak_door[facing=north,half=upper,hinge=left,open=false]', [4,1,0]],
-  ['minecraft:stone_brick_stairs[facing=north,half=bottom,shape=straight]', [6,0,0]],
-  ['minecraft:smooth_stone_slab[type=top]', [8,0,0]],
-  ['minecraft:oak_fence[east=true,west=true]', [10,0,0]],
+  ['minecraft:smooth_stone_slab[type=top]', [6,0,0]],
+  ['minecraft:oak_fence[east=true,west=true]', [8,0,0]],
+  // a real staircase run (facing west = ascending toward -x), exactly what the
+  // voxelizer's stair refinement emits from a stepped ramp:
+  ['minecraft:stone_brick_stairs[facing=west,half=bottom,shape=straight]', [12,0,0]],
+  ['minecraft:stone_brick_stairs[facing=west,half=bottom,shape=straight]', [11,1,0]],
+  ['minecraft:stone_brick_stairs[facing=west,half=bottom,shape=straight]', [10,2,0]],
 ]
 
 const scene=[]
