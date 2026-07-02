@@ -158,6 +158,7 @@ def extract(model, threads: int, spiral_mode: str = "synth"):
     offset_by_class: dict[str, int] = defaultdict(int)
     door_meshes: list[dict] = []  # [{verts, width_m, gid}] in world metres
     spirals: dict[int, list[np.ndarray]] = defaultdict(list)  # assembly id -> vert arrays
+    stair_groups: dict[int, list[np.ndarray]] = defaultdict(list)  # stair assembly id -> vert arrays
     unit_scale = ifcopenshell.util.unit.calculate_unit_scale(model)  # file unit -> metres
     type_counts: Counter = Counter()
     excluded_counts: Counter = Counter()
@@ -193,6 +194,13 @@ def extract(model, threads: int, spiral_mode: str = "synth"):
                 dec = element.Decomposes
                 if dec and dec[0].RelatingObject.is_a() in ("IfcStair", "IfcRamp"):
                     cls = "stair"
+            # Stair geometry is ALSO grouped per assembly so stairwells whose
+            # voxelization is impassable (scissor flights capping each other
+            # at coarse pitch) can be rebuilt as clean walkable runs later.
+            if cls == "stair":
+                dec = getattr(element, "Decomposes", None)
+                aid = dec[0].RelatingObject.id() if dec else shape.id
+                stair_groups[aid].append(v)
             verts_by_class[cls].append(v)
             faces_by_class[cls].append(f + offset_by_class[cls])
             offset_by_class[cls] += len(v)
@@ -215,8 +223,9 @@ def extract(model, threads: int, spiral_mode: str = "synth"):
         "solid_faces_by_class": {c: int(len(m.faces)) for c, m in meshes.items()},
         "door_elements": len(door_meshes),
         "spiral_assemblies": len(spirals),
+        "stair_assemblies": len(stair_groups),
     }
-    return meshes, door_meshes, spirals, stats
+    return meshes, door_meshes, spirals, stair_groups, stats
 
 
 def voxelize_solids(meshes, door_verts, pitch, fill):
@@ -786,6 +795,229 @@ def synth_spiral_stairs(winner, grid, spirals):
     return built
 
 
+def carve_stair_headroom(winner, grid):
+    """Re-open stairwell floor openings above stair flights.
+
+    IfcOpenShell subtracts the stairwell hole from each slab, but at coarse
+    pitch the slab's surface voxels round INTO the opening and cap the flight
+    below: a player (2 blocks tall) can't pass, so every storey above the
+    first becomes unreachable on foot. For every stair block, clear the two
+    cells above its walking surface of FLOOR/ROOF-class blocks (the closed
+    hole). Walls and other stair flights are never touched — a wall beside a
+    flight is real, and scissor flights legitimately cross. Returns the
+    number of cells cleared.
+    """
+    X, plane = grid["X"], grid["plane"]
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    clearable = {CLASS_BLOCKS["floor"], CLASS_BLOCKS["roof"], SLAB_SHAPED.split("[")[0]}
+    stair_keys = [k for k, (_, b) in winner.items()
+                  if b.split("[")[0] in (STAIR_CUBE, STAIR_SHAPED)]
+    cleared = 0
+    for k in stair_keys:
+        z = k // plane
+        rem = k - z * plane
+        y = rem // X
+        x = rem - y * X
+        for j in (1, 2, 3):   # feet, head, and one spare over the tread top
+            kk = key(x, y, z + j)
+            w = winner.get(kk)
+            if w is not None and w[1].split("[")[0] in clearable:
+                winner.pop(kk)
+                cleared += 1
+    return cleared
+
+
+def rebuild_blocked_stairs(winner, grid, stair_groups):
+    """Rebuild stair assemblies whose voxelized flights a player cannot climb.
+
+    At 1 m/block a storey is ~3 cells tall. A scissor / half-turn stair's
+    return flight then crosses directly over the lower flight, so no matter
+    how the treads voxelize there is no 2-block player headroom — the upper
+    storeys become unreachable on foot (observed: everything above storey 4
+    was 0% reachable). Voxelizing harder cannot fix a discretization
+    impossibility, so, like the spiral synthesis, we REBUILD: for each
+    assembly whose treads are substantially head-blocked, clear its voxelized
+    stair cells and lay ONE clean switchback run through the well — one rise
+    per cell, oriented stair blocks, cubes at turning points, guaranteed
+    headroom carved above every tread. Open-air stairs (unblocked treads)
+    are left exactly as voxelized. Returns the number of assemblies rebuilt.
+    """
+    all_min, dims = grid["all_min"], grid["dims"]
+    X, plane, pitch = grid["X"], grid["plane"], grid["pitch"]
+    prio = CLASS_PRIORITY.index("stair")
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    def block_at(x, y, z):
+        w = winner.get(key(x, y, z))
+        return None if w is None else w[1].split("[")[0]
+
+    stair_family = (STAIR_CUBE, STAIR_SHAPED)
+    clearable = {CLASS_BLOCKS["floor"], CLASS_BLOCKS["roof"],
+                 SLAB_SHAPED.split("[")[0], *stair_family}
+    fence_block = CLASS_BLOCKS["railing"]
+    rebuilt = 0
+    protected: set = set()   # cells laid by earlier rebuilds — never clear
+
+    # Several IFC assemblies can share one stairwell (scissor pairs are
+    # modelled as "Stair:NNN" and "Stair:NNN:2") — rebuilding them separately
+    # makes each clear the other's fresh run. Merge groups whose bounding
+    # boxes overlap and rebuild each WELL once.
+    merged = []
+    for verts in stair_groups.values():
+        V = np.concatenate(verts, axis=0)
+        merged.append([V.min(axis=0) - 0.5, V.max(axis=0) + 0.5, [V]])
+    changed = True
+    while changed:
+        changed = False
+        out = []
+        for lo, hi, vs in merged:
+            for m in out:
+                if np.all(lo <= m[1]) and np.all(hi >= m[0]):
+                    m[0] = np.minimum(m[0], lo)
+                    m[1] = np.maximum(m[1], hi)
+                    m[2].extend(vs)
+                    changed = True
+                    break
+            else:
+                out.append([lo, hi, vs])
+        merged = out
+
+    for lo_m, hi_m, verts_list in merged:
+        V = np.concatenate(verts_list, axis=0)
+        idx0 = np.floor((V.min(axis=0) - all_min) / pitch).astype(int)
+        idx1 = np.ceil((V.max(axis=0) - all_min) / pitch).astype(int)
+        x0, y0, z0 = (max(0, int(a)) for a in idx0)
+        x1, y1, z1 = (int(a) for a in np.minimum(idx1, dims - 1))
+        h = z1 - z0
+        if h < 2:
+            continue
+
+        # collect this well's stair cells and CLIMB-TEST it: can a 2-block
+        # player actually walk (8-dir, 1-block steps) from the bottom storey
+        # to the top storey through the current voxels? "Treads look open" is
+        # not enough — chunky scissor blobs often dead-end mid-well.
+        cells = [(x, y, z) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1)
+                 for z in range(z0, z1 + 1) if block_at(x, y, z) in stair_family]
+        if not cells:
+            continue
+
+        px0, px1 = max(0, x0 - 1), min(int(dims[0]) - 1, x1 + 1)
+        py0, py1 = max(0, y0 - 1), min(int(dims[1]) - 1, y1 + 1)
+
+        def stand_cells():
+            out = set()
+            for x in range(px0, px1 + 1):
+                for y in range(py0, py1 + 1):
+                    for z in range(max(0, z0 - 1), z1 + 2):
+                        w = winner.get(key(x, y, z))
+                        if w is None or "_door" in w[1] or "_fence" in w[1]:
+                            continue
+                        if (winner.get(key(x, y, z + 1)) is None
+                                and winner.get(key(x, y, z + 2)) is None):
+                            out.add((x, y, z + 1))
+            return out
+
+        def climbs(stand):
+            starts = {p for p in stand if p[2] <= z0 + 1}
+            goal_z = z1
+            frontier = list(starts)
+            seenl = set(starts)
+            while frontier:
+                x, y, z = frontier.pop()
+                if z >= goal_z:
+                    return True
+                for dx in (-1, 0, 1):
+                    for dy in (-1, 0, 1):
+                        if dx == dy == 0:
+                            continue
+                        for dz in (0, 1, -1, -2):
+                            q = (x + dx, y + dy, z + dz)
+                            if q in stand and q not in seenl:
+                                seenl.add(q)
+                                frontier.append(q)
+            return False
+
+        if climbs(stand_cells()):
+            continue
+
+        # -- rebuild: clear the voxelized flights and stale railing fences
+        for (x, y, z) in cells:
+            if (x, y, z) not in protected:
+                winner.pop(key(x, y, z), None)
+        for x in range(x0, x1 + 1):
+            for y in range(y0, y1 + 1):
+                for z in range(z0, z1 + 2):
+                    if (x, y, z) in protected:
+                        continue
+                    w = winner.get(key(x, y, z))
+                    if w is not None and w[1].split("[")[0] == fence_block:
+                        winner.pop(key(x, y, z))
+
+        # long axis = run direction; start at the end nearest the lowest treads
+        along_x = (x1 - x0) >= (y1 - y0)
+        lo, hi = (x0, x1) if along_x else (y0, y1)
+        s_lo, s_hi = (y0, y1) if along_x else (x0, x1)
+        low_band = V[V[:, 2] <= V[:, 2].min() + 0.6]
+        start_m = low_band[:, 0 if along_x else 1].mean()
+        start_c = int(round((start_m - all_min[0 if along_x else 1]) / pitch))
+        forward = 1 if abs(start_c - lo) <= abs(start_c - hi) else -1
+        pos = lo if forward == 1 else hi
+        col = (s_lo + s_hi) // 2
+
+        placed_cells = []
+        z = z0
+        while z <= z1:
+            cx, cy = (pos, col) if along_x else (col, pos)
+            nxt = pos + forward
+            turning = nxt < lo or nxt > hi
+            if turning:
+                b = STAIR_CUBE                      # landing corner
+                forward = -forward
+                if col + 1 <= s_hi:
+                    col += 1
+                elif col - 1 >= s_lo:
+                    col -= 1
+            else:
+                d = (forward, 0) if along_x else (0, forward)
+                facing = GRID_TO_FACING[d]
+                b = f"{STAIR_SHAPED}[facing={facing},half=bottom,shape=straight]"
+            cur = winner.get(key(cx, cy, z))
+            if cur is not None and "_door" in cur[1]:
+                pass   # never overwrite a door — it is passable anyway
+            else:
+                winner[key(cx, cy, z)] = (prio, b)
+                placed_cells.append((cx, cy, z))
+            if not turning:
+                pos += forward
+            z += 1
+
+        # headroom above every tread; support cube under floating treads
+        placed_set = set(placed_cells)
+        head_clearable = clearable | {fence_block}
+        for (cx, cy, z) in placed_cells:
+            for j in (1, 2, 3):
+                if (cx, cy, z + j) in placed_set or (cx, cy, z + j) in protected:
+                    continue
+                w = winner.get(key(cx, cy, z + j))
+                if w is None or w[1].split("[")[0] not in head_clearable:
+                    continue
+                over = winner.get(key(cx, cy, z + j + 1))
+                if over is not None and "_door" in over[1]:
+                    continue   # that's a door threshold — leave it standing
+                winner.pop(key(cx, cy, z + j))
+            if z >= 1 and winner.get(key(cx, cy, z - 1)) is None:
+                winner[key(cx, cy, z - 1)] = (prio, STAIR_CUBE)
+                protected.add((cx, cy, z - 1))
+        protected.update(placed_set)
+        rebuilt += 1
+    return rebuilt
+
+
 def refine_fences(winner, grid):
     """Write connection states onto railing fence blocks.
 
@@ -951,7 +1183,7 @@ def main() -> None:
     print(f"Opening {ifc_path.name} ...", flush=True)
     model = ifcopenshell.open(str(ifc_path))
     print(f"Extracting geometry with {args.threads} threads ...", flush=True)
-    meshes, door_verts, spirals, ex_stats = extract(model, args.threads, args.spiral)
+    meshes, door_verts, spirals, stair_groups, ex_stats = extract(model, args.threads, args.spiral)
     print("Solid faces by class:", ex_stats["solid_faces_by_class"], flush=True)
     print(f"Door elements: {ex_stats['door_elements']}", flush=True)
 
@@ -968,6 +1200,10 @@ def main() -> None:
     spirals_built = synth_spiral_stairs(winner, grid, spirals) if spirals else 0
     if spirals_built:
         print(f"Synthesized {spirals_built} walkable spiral staircase(s)", flush=True)
+    headroom_cleared = carve_stair_headroom(winner, grid)
+    print(f"Cleared {headroom_cleared} closed stairwell-opening cells above flights", flush=True)
+    stairs_rebuilt = rebuild_blocked_stairs(winner, grid, stair_groups)
+    print(f"Rebuilt {stairs_rebuilt} impassable stair assemblies as clean runs", flush=True)
     if args.floor_slabs:
         slabs_converted = refine_floor_slabs(winner, grid)
         print(f"Refined {slabs_converted} thin floor cubes -> slabs", flush=True)
@@ -1000,6 +1236,7 @@ def main() -> None:
         "stairs_mode": args.stairs,
         "stairs_converted": stairs_converted,
         "spirals_synthesized": spirals_built,
+        "stairs_rebuilt": stairs_rebuilt,
         "slabs_converted": slabs_converted,
         "fences_connected": fences_connected,
         "world_bounds_min_m": grid["all_min"].tolist(),
