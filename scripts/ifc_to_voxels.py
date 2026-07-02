@@ -864,9 +864,20 @@ def rebuild_blocked_stairs(winner, grid, stair_groups):
     protected: set = set()   # cells laid by earlier rebuilds — never clear
 
     # Several IFC assemblies can share one stairwell (scissor pairs are
-    # modelled as "Stair:NNN" and "Stair:NNN:2") — rebuilding them separately
-    # makes each clear the other's fresh run. Merge groups whose bounding
-    # boxes overlap and rebuild each WELL once.
+    # modelled as "Stair:NNN" and "Stair:NNN:2"; fire-escape towers stack one
+    # assembly per storey on one footprint) — rebuilding them separately makes
+    # each clear the other's fresh run. Merge groups into WELLS — but only
+    # when their horizontal FOOTPRINTS genuinely overlap. Mere bbox contact is
+    # not enough: entrance steps and ramps that touch a stair tower's box
+    # edge-on would chain into one long "well", and the synthesized run would
+    # march across the whole facade instead of switchbacking inside the tower.
+    def same_well(lo_a, hi_a, lo_b, hi_b):
+        for ax in (0, 1):   # horizontal axes: need real overlap, not a touch
+            ov = min(hi_a[ax], hi_b[ax]) - max(lo_a[ax], lo_b[ax])
+            need = min(1.5, 0.4 * min(hi_a[ax] - lo_a[ax], hi_b[ax] - lo_b[ax]))
+            if ov < need:
+                return False
+        return min(hi_a[2], hi_b[2]) >= max(lo_a[2], lo_b[2])  # z: contact ok
     merged = []
     for verts in stair_groups.values():
         V = np.concatenate(verts, axis=0)
@@ -877,7 +888,7 @@ def rebuild_blocked_stairs(winner, grid, stair_groups):
         out = []
         for lo, hi, vs in merged:
             for m in out:
-                if np.all(lo <= m[1]) and np.all(hi >= m[0]):
+                if same_well(lo, hi, m[0], m[1]):
                     m[0] = np.minimum(m[0], lo)
                     m[1] = np.maximum(m[1], hi)
                     m[2].extend(vs)
@@ -967,7 +978,27 @@ def rebuild_blocked_stairs(winner, grid, stair_groups):
         start_c = int(round((start_m - all_min[0 if along_x else 1]) / pitch))
         forward = 1 if abs(start_c - lo) <= abs(start_c - hi) else -1
         pos = lo if forward == 1 else hi
-        col = (s_lo + s_hi) // 2
+
+        # run column: NOT blindly the middle — a stair tower's middle line can
+        # be its curtain-wall/door plane, which threads the run through every
+        # storey exit door (door cells can't take treads, and door thresholds
+        # veto the headroom pops -> the run gets unclimbable gaps). Pick the
+        # lane with the least doors/protected mass along the whole climb.
+        def lane_cost(c):
+            cost = 0
+            for p in range(lo, hi + 1):
+                cx, cy = (p, c) if along_x else (c, p)
+                for z in range(z0, z1 + 2):
+                    w = winner.get(key(cx, cy, z))
+                    if w is None:
+                        continue
+                    base = w[1].split("[")[0]
+                    if "_door" in w[1]:
+                        cost += 25
+                    elif base not in clearable and base != fence_block:
+                        cost += 1
+            return cost
+        col = min(range(s_lo, s_hi + 1), key=lane_cost)
 
         placed_cells = []
         z = z0
@@ -988,10 +1019,14 @@ def rebuild_blocked_stairs(winner, grid, stair_groups):
                 b = f"{STAIR_SHAPED}[facing={facing},half=bottom,shape=straight]"
             cur = winner.get(key(cx, cy, z))
             if cur is not None and "_door" in cur[1]:
-                pass   # never overwrite a door — it is passable anyway
-            else:
-                winner[key(cx, cy, z)] = (prio, b)
-                placed_cells.append((cx, cy, z))
+                # never overwrite a door — cross its threshold FLAT (don't
+                # rise this step): a skipped tread plus a rise would leave a
+                # 2-cell jump no player can climb.
+                if not turning:
+                    pos += forward
+                continue
+            winner[key(cx, cy, z)] = (prio, b)
+            placed_cells.append((cx, cy, z))
             if not turning:
                 pos += forward
             z += 1
@@ -1161,10 +1196,125 @@ def unblock_door_passages(winner, grid):
                 solid_cols = [c for c in col if not passable(c)]
                 if any(winner[c][1].split("[")[0] not in carveable for c in solid_cols):
                     break                          # protected block in the way
+                # a plug cell laterally adjacent to ANOTHER door is that
+                # door's flanking wall — carving it leaves the neighbour
+                # free-standing in the hallway. Leave the plug alone.
+                if any("_door" in winner[key(fx - dy * l, fy + dx * l, z + h)][1]
+                       for l in (-1, 1) for h in range(door_h)
+                       if key(fx - dy * l, fy + dx * l, z + h) in winner):
+                    break
                 run.extend(solid_cols)
         if helped:
             unblocked += 1
     return unblocked, carved
+
+
+def connect_hidden_rooms(winner, grid):
+    """Carve hallway doors through to enclosed, door-less rooms.
+
+    Voxel rounding can swallow the entire passage between a corridor door and
+    the small room it serves: the door sits flush in the hallway wall while
+    the room survives as a sealed air pocket that NO door touches. The plain
+    unblock pass (<= 3 m reach) won't cut that deep on purpose — tunnelling
+    blindly would puncture unrelated rooms. Here the target is verified
+    first: label every enclosed air component, keep only components that
+    (a) never reach the outside, (b) touch no door, and (c) contain at least
+    one standable cell — those are HIDDEN rooms. Then, for each door side
+    still plugged, probe up to ~6 m along the facing normal and carve through
+    only when the run is carveable wall mass ending inside a hidden room.
+    Returns (doors_connected, hidden_rooms_found, hidden_rooms_left, cells).
+    """
+    try:
+        from scipy import ndimage
+    except ImportError:
+        return 0, 0, 0, 0
+    X, plane, pitch = grid["X"], grid["plane"], grid["pitch"]
+    dims = grid["dims"]
+    nx, ny, nz = int(dims[0]), int(dims[1]), int(dims[2])
+    door_h = max(2, round(2.0 / pitch))
+    deep_run = max(6, round(6.0 / pitch))
+    carveable = {CLASS_BLOCKS[c] for c in
+                 ("wall", "floor", "structure", "roof", "frame", "other")}
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    occ = np.zeros((nx, ny, nz), dtype=bool)
+    doors_mask = np.zeros((nx, ny, nz), dtype=bool)
+    keys = np.fromiter(winner.keys(), dtype=np.int64, count=len(winner))
+    zs = keys // plane
+    rem = keys - zs * plane
+    ys = rem // X
+    xs = rem - ys * X
+    occ[xs, ys, zs] = True
+    lower_doors = []
+    for k, (cls, b) in winner.items():
+        if "_door" not in b:
+            continue
+        z = k // plane
+        r = k - z * plane
+        x, y = r - (r // X) * X, r // X
+        doors_mask[x, y, z] = True
+        if "half=lower" in b:
+            lower_doors.append((x, y, z, b.split("facing=")[1].split(",")[0]))
+
+    six = ndimage.generate_binary_structure(3, 1)
+    labels, n = ndimage.label(~occ, structure=six)
+    # components reaching the array boundary are the outdoors
+    open_ids = set(np.unique(np.concatenate([
+        labels[0, :, :].ravel(), labels[-1, :, :].ravel(),
+        labels[:, 0, :].ravel(), labels[:, -1, :].ravel(),
+        labels[:, :, 0].ravel(), labels[:, :, -1].ravel()]))) - {0}
+    # components already served by a door (any air cell 6-adjacent to a door)
+    door_halo = ndimage.binary_dilation(doors_mask, structure=six)
+    served_ids = set(np.unique(labels[door_halo & ~occ])) - {0}
+    # standable somewhere: air with solid below and air above
+    standable = (~occ[:, :, 1:-1]) & occ[:, :, :-2] & (~occ[:, :, 2:])
+    roomy_ids = set(np.unique(labels[:, :, 1:-1][standable])) - {0}
+    hidden = (roomy_ids - open_ids - served_ids)
+    hidden_found = len(hidden)
+
+    F2G = {v: k for k, v in GRID_TO_FACING.items()}
+    connected = carved = 0
+    for x, y, z, facing in lower_doors:
+        dx, dy = F2G[facing]
+        for s in (1, -1):
+            run = []
+            for d in range(1, deep_run + 1):
+                fx, fy = x + dx * d * s, y + dy * d * s
+                if not (0 <= fx < nx and 0 <= fy < ny and z + door_h <= nz):
+                    break
+                col = [(fx, fy, z + h) for h in range(door_h)]
+                if not any(occ[c] for c in col):
+                    if not run:
+                        break                       # already open: not our case
+                    comp = labels[fx, fy, z]
+                    if comp in hidden:
+                        for c in run:
+                            winner.pop(key(*c), None)
+                            occ[c] = False
+                            carved += 1
+                        hidden.discard(comp)
+                        connected += 1
+                    break
+                solid = [c for c in col if occ[c]]
+                bad = False
+                for c in solid:
+                    w = winner.get(key(*c))
+                    if w is None or w[1].split("[")[0] not in carveable:
+                        bad = True
+                        break
+                # never strip a neighbouring door's flanking wall
+                if not bad and any(
+                        doors_mask[fx - dy * l, fy + dx * l, z + h]
+                        for l in (-1, 1) for h in range(door_h)
+                        if 0 <= fx - dy * l < nx and 0 <= fy + dx * l < ny
+                        and z + h < nz):
+                    bad = True
+                if bad:
+                    break
+                run.extend(solid)
+    return connected, hidden_found, len(hidden), carved
 
 
 def refine_floor_slabs(winner, grid):
@@ -1285,6 +1435,9 @@ def main() -> None:
     print(f"Rebuilt {stairs_rebuilt} impassable stair assemblies as clean runs", flush=True)
     doors_unblocked, cells_unplugged = unblock_door_passages(winner, grid)
     print(f"Unblocked {doors_unblocked} dead-end doors ({cells_unplugged} plug cells carved)", flush=True)
+    rooms_connected, rooms_hidden, rooms_left, _ = connect_hidden_rooms(winner, grid)
+    print(f"Hidden door-less rooms: {rooms_hidden}; connected {rooms_connected} "
+          f"through their hallway door, {rooms_left} remain sealed", flush=True)
     if args.floor_slabs:
         slabs_converted = refine_floor_slabs(winner, grid)
         print(f"Refined {slabs_converted} thin floor cubes -> slabs", flush=True)
@@ -1319,6 +1472,9 @@ def main() -> None:
         "spirals_synthesized": spirals_built,
         "stairs_rebuilt": stairs_rebuilt,
         "doors_unblocked": doors_unblocked,
+        "hidden_rooms_found": rooms_hidden,
+        "hidden_rooms_connected": rooms_connected,
+        "hidden_rooms_left": rooms_left,
         "slabs_converted": slabs_converted,
         "fences_connected": fences_connected,
         "world_bounds_min_m": grid["all_min"].tolist(),
