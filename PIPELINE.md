@@ -86,9 +86,11 @@ ring at coarse pitches). This mirrors the IfcVoxNet "global priority" approach.
 `IfcStair`/`IfcRamp` are stair stringers and voxelize with the staircase;
 all others are treated as curtain-wall framing.
 
-Railing fences carry explicit connection states
-(`oak_fence[east=true,north=false,...]`, computed from neighbouring fences and
-full-cube solids). This matters because saved worlds, schematic pastes and
+Railing fences are **one block high** (vertical stacks from the ~1.1 m
+guardrail geometry are collapsed to the bottom cell — a single fence already
+reads and collides as a railing in Minecraft) and carry explicit connection
+states (`oak_fence[east=true,north=false,...]`, computed from neighbouring
+fences and full-cube solids). This matters because saved worlds, schematic pastes and
 prismarine-based renderers use the *stored* state — a bare `oak_fence` never
 receives the in-game neighbour update that computes its arms, so it would
 render as a row of disconnected posts.

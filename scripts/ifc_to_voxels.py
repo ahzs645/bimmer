@@ -707,8 +707,21 @@ def refine_fences(winner, grid):
         return int(x) + X * int(y) + plane * int(z)
 
     fence_block = CLASS_BLOCKS["railing"]
-    fence_keys = [k for k, (_, b) in winner.items() if b.split("[")[0] == fence_block]
-    fence_set = set(fence_keys)
+    fence_set = {k for k, (_, b) in winner.items() if b.split("[")[0] == fence_block}
+
+    # Collapse vertical stacks to a SINGLE fence, like a vanilla Minecraft
+    # railing: a ~1.1 m guardrail voxelizes into 2 stacked cells at 1 m pitch,
+    # but one fence block already reads (and collides) as a railing — the
+    # stacked look is wrong. Adjacent-above fence cells are always the same
+    # railing (storeys are several cells apart), so keep only the bottom cell.
+    stacked = set(fence_set)   # membership snapshot: "had a fence below" must
+    for k in stacked:          # use the ORIGINAL stack, not the shrinking set
+        z = k // plane
+        rem = k - z * plane
+        if key(rem - (rem // X) * X, rem // X, z - 1) in stacked:
+            winner.pop(k, None)
+            fence_set.discard(k)
+    fence_keys = list(fence_set)
 
     def connects(k):
         if k in fence_set:

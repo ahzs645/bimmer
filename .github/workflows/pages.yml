@@ -46,10 +46,12 @@ jobs:
       - name: Add the UNBC world and boot straight into it
         run: |
           cp renderers/mcweb/unbc_world.zip site/world.zip
-          # No query params -> load the bundled world. Visitors can still pass
-          # their own ?map=/?singleplayer/... which suppresses the redirect.
-          sed -i 's|<head>|<head><script>if(!location.search)location.replace(location.pathname+"?map=world.zip"+location.hash)</script>|' site/index.html
-          grep -q 'map=world.zip' site/index.html
+          # No query params -> load the bundled world (with the top-right
+          # FPS/debug reader hidden via setting=renderDebug:"none"). Visitors
+          # can still pass their own ?map=/?singleplayer/... which suppresses
+          # the redirect. NB: \& because & is special in sed replacements.
+          sed -i 's|<head>|<head><script>if(!location.search)location.replace(location.pathname+"?map=world.zip\&setting=renderDebug:%22none%22"+location.hash)</script>|' site/index.html
+          grep -q 'map=world.zip&setting=renderDebug' site/index.html
 
       # --- /blockcraft: serverless BlockCraft ---
       - name: Build serverless BlockCraft
