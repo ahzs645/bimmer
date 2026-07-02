@@ -1088,6 +1088,85 @@ def refine_fences(winner, grid):
     return connected
 
 
+def unblock_door_passages(winner, grid):
+    """Break dead-end doors through to the room they serve.
+
+    Pass 2a carves the passage through the door's own bounding-box depth, but
+    walls thicker than the door frame — and small rooms whose opposite wall
+    rounds into the doorway at coarse pitches — leave 1..3 solid cells
+    directly in front of the leaf. The player opens the door onto bare
+    concrete. For every lower door half, probe outward along the facing
+    normal on both sides: if a short run (<= 3 cells) of carveable solid ends
+    at a 2-high open cell with a standable floor, carve that run door-height
+    tall. Runs that never reach open space (fully swallowed closets), runs
+    through protected classes (stairs, railings, glass, other doors) and
+    openings with no floor (exterior drops) are left alone.
+    Returns (doors_unblocked, cells_carved).
+    """
+    X, plane, pitch = grid["X"], grid["plane"], grid["pitch"]
+    door_h = max(2, round(2.0 / pitch))
+    max_run = max(3, round(3.0 / pitch))  # up to 3 m of wall at any pitch
+    # winner stores (priority_index, block_id): decide carveability by block.
+    # Glass, railings, stairs and other doors are protected — carving them
+    # would puncture facades or destroy walking paths.
+    carveable = {CLASS_BLOCKS[c] for c in
+                 ("wall", "floor", "structure", "roof", "frame", "other")}
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    def passable(k):
+        w = winner.get(k)
+        return w is None or "_door" in w[1]
+
+    F2G = {v: k for k, v in GRID_TO_FACING.items()}
+    lower_doors = []
+    for k, (cls, b) in winner.items():
+        if "_door" in b and "half=lower" in b:
+            z = k // plane
+            rem = k - z * plane
+            lower_doors.append((rem - (rem // X) * X, rem // X, z,
+                                b.split("facing=")[1].split(",")[0]))
+
+    unblocked = carved = 0
+    for x, y, z, facing in lower_doors:
+        dx, dy = F2G[facing]
+        helped = False
+        for s in (1, -1):
+            run = []          # solid cells to carve if we break through
+            for d in range(1, max_run + 2):
+                fx, fy = x + dx * d * s, y + dy * d * s
+                col = [key(fx, fy, z + h) for h in range(door_h)]
+                if all(passable(c) for c in col):
+                    if not run:
+                        break                      # already open at d=1
+                    # standable landing: support within a 3-cell drop
+                    landing = None
+                    for drop in range(1, 5):
+                        bk = winner.get(key(fx, fy, z - drop))
+                        if bk is not None and "_door" not in bk[1]:
+                            landing = drop
+                            break
+                        if not passable(key(fx, fy, z - drop)):
+                            break
+                    if landing is not None and landing <= 4:
+                        for c in run:
+                            if c in winner:
+                                del winner[c]
+                                carved += 1
+                        helped = True
+                    break
+                if d > max_run:
+                    break                          # wall too thick: leave it
+                solid_cols = [c for c in col if not passable(c)]
+                if any(winner[c][1].split("[")[0] not in carveable for c in solid_cols):
+                    break                          # protected block in the way
+                run.extend(solid_cols)
+        if helped:
+            unblocked += 1
+    return unblocked, carved
+
+
 def refine_floor_slabs(winner, grid):
     """Convert thin, single-voxel `floor`-class plates to bottom slabs.
 
@@ -1204,6 +1283,8 @@ def main() -> None:
     print(f"Cleared {headroom_cleared} closed stairwell-opening cells above flights", flush=True)
     stairs_rebuilt = rebuild_blocked_stairs(winner, grid, stair_groups)
     print(f"Rebuilt {stairs_rebuilt} impassable stair assemblies as clean runs", flush=True)
+    doors_unblocked, cells_unplugged = unblock_door_passages(winner, grid)
+    print(f"Unblocked {doors_unblocked} dead-end doors ({cells_unplugged} plug cells carved)", flush=True)
     if args.floor_slabs:
         slabs_converted = refine_floor_slabs(winner, grid)
         print(f"Refined {slabs_converted} thin floor cubes -> slabs", flush=True)
@@ -1237,6 +1318,7 @@ def main() -> None:
         "stairs_converted": stairs_converted,
         "spirals_synthesized": spirals_built,
         "stairs_rebuilt": stairs_rebuilt,
+        "doors_unblocked": doors_unblocked,
         "slabs_converted": slabs_converted,
         "fences_connected": fences_connected,
         "world_bounds_min_m": grid["all_min"].tolist(),

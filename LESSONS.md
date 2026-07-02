@@ -36,10 +36,16 @@ All fixes live in `scripts/ifc_to_voxels.py` unless noted.
 | D7 | Double doors with leaves at different heights or un-mirrored hinges | Each leaf probed its own floor; runs not detected across separate IfcDoor elements | One floor level per door element; hinge mirroring over runs of adjacent same-facing leaves (pass 3) |
 | D8 | Storefront door standing alone in the plaza, glazing starts one cell above | Curtain-wall glazing bay thinner than a voxel at door level — nothing voxelized beside the leaf | Two-tier anchor (pass 2c): pull glazing **down** when it exists above the flanking cell; for doors free on **both** sides, **bridge with glass** to the nearest solid within 3 cells. One-sided doors untouched (open side is usually a passage) |
 | D9 | Door floating over a hole, or sunk half into a thick landing | Carve removed the slab under the leaf; landings 2 cells thick | Threshold block under empty leaf cells; probe window covers ±2 around the sill |
+| D10 | **Dead-end doors**: open the door and there is bare concrete behind it (~500 doors) | Pass 2a carves only the door's own bbox depth; walls thicker than the frame — and small rooms whose far wall rounds into the doorway — leave 1–3 solid cells in front of the leaf | `unblock_door_passages`: probe outward along the facing normal from every leaf; a short (≤3 m) run of carveable solid that ends at a 2-high open cell with a standable floor is carved door-height tall. Glass, railings, stairs and other doors are never carved, and openings with no floor (exterior drops) are left alone |
 
-Result on this model: 2,085 doors — 0 sunk, 0 stepped pairs, 0 orphan halves,
-0 un-mirrored double doors, 92 "free-standing" (all in open/diagonal glass
-facades with nothing within bridging distance; correct position, walkable).
+Result on this model: 2,085 doors — 0 stepped pairs, 0 orphan halves,
+0 un-mirrored double doors, 1,610 with a walkable approach on **both** sides
+(up from 1,105 before the dead-end pass). The rest are honest artifacts of
+1 m voxels, not placement bugs: 72 fully entombed inside thick wall mass
+(invisible in game), ~256 closet/shaft doors whose room was swallowed by
+wall rounding (open onto solid >3 m deep — carving further would tunnel into
+unrelated rooms), and ~147 facade/terrace doors with a genuine drop or
+missing exterior floor on one side. All are pin-able via `--overrides`.
 
 ### Stairs and railings
 
