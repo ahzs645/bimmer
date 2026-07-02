@@ -4,6 +4,20 @@ The pipeline (PIPELINE.md) turns an IFC into a `blocks.csv` of Minecraft
 block-states. Two ways to *walk through* that building in a browser are wired up
 in this repo; this doc compares them and explains when to use which.
 
+## GitHub Pages layout
+
+`.github/workflows/pages.yml` publishes both renderers as one static site
+(enable Pages: Settings → Pages → Source: *GitHub Actions*):
+
+| URL | renderer | how |
+|---|---|---|
+| `/` (main page) | **minecraft-web-client** — real vanilla block models (openable doors, oriented stairs, connected fences) | the upstream prebuilt `self-host.zip` release bundle + the committed 1 m world snapshot (`renderers/mcweb/unbc_world.zip`); boots straight into the building via `?map=world.zip` (an injected redirect that only fires when no query params are given) |
+| `/blockcraft/` | **BlockCraft (serverless)** — lightweight cube engine, world generated in-browser | `OFFLINE_MODE=1` static build of the tracked fork (see BLOCKCRAFT.md) |
+
+To refresh the deployed model, regenerate + commit the two snapshots
+(`renderers/mcweb/unbc_world.zip` from `run.sh export` + `pack`, and
+`blockcraft/client/public/building.json` from `setup_blockcraft.py`).
+
 | | **BlockCraft** (`/blockcraft`) | **minecraft-web-client** (`/renderers/mcweb`) |
 |---|---|---|
 | what it is | a from-scratch WebGL voxel game (Three.js + Node), Apache-2.0, forked into this repo | a browser Minecraft client (MIT) built on the prismarine stack; renders **real vanilla block models** |

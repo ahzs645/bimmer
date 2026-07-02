@@ -13,11 +13,13 @@ first-person, creative/fly, functional doors — all client-side.
 scripts/build_blockcraft_static.sh serve   # build dist/ + test on :3003
 ```
 
-`blockcraft/client/dist/` is then a plain static site — host it anywhere. For
-**GitHub Pages**: enable Pages (Settings → Pages → Source: *GitHub Actions*)
-and run the **“Deploy serverless BlockCraft to GitHub Pages”** workflow
-(`.github/workflows/blockcraft-pages.yml`; it also auto-runs on pushes to
-`main` touching `blockcraft/`). The committed
+`blockcraft/client/dist/` is then a plain static site — host it anywhere. On
+**GitHub Pages** it deploys as the **`/blockcraft/` subpage** of the project
+site (the root is the higher-fidelity minecraft-web-client renderer — see
+RENDERERS.md → *GitHub Pages layout*): enable Pages (Settings → Pages →
+Source: *GitHub Actions*) and run the **“Deploy renderers to GitHub Pages”**
+workflow (`.github/workflows/pages.yml`; it also auto-runs on pushes to `main`
+touching `blockcraft/`). The committed
 `blockcraft/client/public/building.json` snapshot is what gets deployed, so CI
 never needs the IFC. Notes:
 
