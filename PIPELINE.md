@@ -64,8 +64,10 @@ host wall, so the wall mesh arrives with the holes already in it.
 Each IFC class maps to a coarse *behaviour class*, each class to a Minecraft
 block. Every class is voxelized onto **one shared integer lattice**; when two
 classes land in the same cell, a **priority rule** decides the winner (solid
-structure beats transparent glazing, so the building doesn't read see-through).
-This mirrors the IfcVoxNet "global priority" approach.
+structure beats transparent glazing, so the building doesn't read see-through;
+stairs beat *everything* solid, because stair flights run flush against
+stairwell shaft walls and would otherwise lose their walking path to the wall
+ring at coarse pitches). This mirrors the IfcVoxNet "global priority" approach.
 
 | IFC type | class | Minecraft block |
 |---|---|---|
@@ -76,8 +78,22 @@ This mirrors the IfcVoxNet "global priority" approach.
 | `IfcStair*`, `IfcRamp*` | stair | `stone_bricks` |
 | `IfcWindow`, `IfcPlate`, `IfcCurtainWall` | glass | `light_blue_stained_glass` |
 | `IfcMember` (mullions) | frame | `gray_concrete` |
-| `IfcRailing` | railing | `iron_bars` *(functional)* |
+| `IfcMember` (stair stringers) | stair | `stone_bricks` |
+| `IfcRailing` | railing | `oak_fence` *(with connection states — see below)* |
 | `IfcDoor` | door | `oak_door` *(functional — see below)* |
+
+`IfcMember` is disambiguated by its aggregation: members that decompose an
+`IfcStair`/`IfcRamp` are stair stringers and voxelize with the staircase;
+all others are treated as curtain-wall framing.
+
+Railing fences are **one block high** (vertical stacks from the ~1.1 m
+guardrail geometry are collapsed to the bottom cell — a single fence already
+reads and collides as a railing in Minecraft) and carry explicit connection
+states (`oak_fence[east=true,north=false,...]`, computed from neighbouring
+fences and full-cube solids). This matters because saved worlds, schematic pastes and
+prismarine-based renderers use the *stored* state — a bare `oak_fence` never
+receives the in-game neighbour update that computes its arms, so it would
+render as a row of disconnected posts.
 
 ### 5. Functional doors (the headline feature)
 Each `IfcDoor` becomes a **real, openable Minecraft door**, not a solid block or
@@ -85,12 +101,39 @@ a bare gap:
 
 1. The door's voxel footprint is read from its geometry (in shared-grid
    coordinates).
-2. The whole opening footprint is **carved to air** → the doorway is walkable.
+2. The **passage** is carved to air (each leaf column, through the wall depth,
+   door-height tall) — and *only* the passage: carving the door's whole
+   bounding box would also blow out the glazing and framing around wide
+   curtain-wall / shop-front doors, leaving free-standing doors in holes.
 3. A two-half `minecraft:oak_door` is placed at the threshold:
    - `facing` is derived from the **wall normal** (the thinner horizontal axis
      of the door footprint),
+   - the door bottom is anchored to the walkable surface beside the opening
+     that is **closest to the IFC sill height**, never more than 2 cells from
+     it (a probed floor cell must have door-height headroom above it, so
+     walls/mullions/glazing can't misanchor it; picking the *highest* nearby
+     surface instead hoisted facade doors onto adjacent roof decks, and with a
+     fully plugged doorway the only "surface" found is the roof on top of the
+     wall — beyond the cap the IFC sill wins outright). All leaves of a door
+     share one floor level so double doors never step,
    - `half=lower` at floor level + `half=upper` directly above,
-   - `hinge`, `open`, `powered` states set so it pastes as a closed, working door.
+   - `hinge`, `open`, `powered` states set so it pastes as a closed, working
+     door; adjacent leaves get mirrored hinges so double doors meet in the
+     middle.
+
+Per-door **overrides** (for the handful of doors coarse voxels can't resolve —
+split-level thresholds, odd curtain-wall vestibules): pass
+`--overrides my.json` with
+
+```json
+{"doors": {"3cUkl32yn9qRSPvBJVyWYp": {"raise": 1},
+           "0BTBFw6f90Nfh9rP1dlXr2": {"skip": true},
+           "2O2Fr$t4X7Zf8NOew3FLOH": {"facing": "north", "leaves": 2}}}
+```
+
+Every run writes `out/<name>/doors.csv` (GlobalId → placed x/y/z, facing,
+leaves, sill offset) so you can find the GlobalId of any misplaced door in the
+world and pin it.
 
 Block-states are carried through `blocks.csv` as
 `minecraft:oak_door[facing=east,half=lower,...]` and preserved by **both** the
@@ -102,7 +145,18 @@ round-trip.
 `--pitch 1.0`, where a typical doorway is ≈ 1 wide × 2 tall = exactly one
 Minecraft door.
 
-### 6. Surface voxelization, **not** fill
+### 6. Spiral staircases are synthesized, not voxelized
+A voxelized spiral flight at 1 m/block is a jumpy blob pinched between the
+stairwell shaft walls (treads stack in tight columns, so stair refinement
+can't orient them). With `--spiral synth` (the default), each
+`IfcStair.ShapeType == SPIRAL_STAIR` assembly is instead rebuilt from its
+parameters: a centre newel column plus one tread per ring cell winding around
+it, with the start/end angles, height and winding direction measured from the
+real flight mesh. Every rise is an oriented stair block, so the spiral is
+walkable without jumping; headroom above each tread is carved. Use
+`--spiral voxel` to keep the raw voxelization.
+
+### 7. Surface voxelization, **not** fill
 `--fill` is off by default. IFC-derived meshes are usually **not watertight**, so
 trimesh `.fill()` is unreliable (and would also fill interior rooms solid).
 Surface voxelization gives walkable shells, which is what you want for a
@@ -115,7 +169,7 @@ building.
 | Script | Role | Key flags |
 |---|---|---|
 | `scripts/inspect_ifc.py` | fast probe: schema, units, storeys, element counts, geometry scale | — |
-| `scripts/ifc_to_voxels.py` | **engine**: IFC → `blocks.csv` (semantic + functional doors) | `--pitch`, `--doors {functional,air,solid}`, `--fill`, `--threads` |
+| `scripts/ifc_to_voxels.py` | **engine**: IFC → `blocks.csv` (semantic + functional doors) | `--pitch`, `--doors {functional,air,solid}`, `--spiral {synth,voxel}`, `--overrides`, `--fill`, `--threads` |
 | `scripts/blocks_to_minecraft.py` | `blocks.csv` → `.schem` / `.litematic` (state-aware) | `--format {schem,litematic}`, `--minecraft-version` |
 | `scripts/export_web.py` | `blocks.csv` → compact binary + meta for the viewer | `--name`, `--label`, `--pitch` |
 | `scripts/render_voxels.py` | `blocks.csv` → iso / plan / elevation PNGs | `--iso-scale` |

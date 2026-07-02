@@ -3,7 +3,7 @@
 #
 # minecraft-web-client (https://github.com/zardoy/minecraft-web-client, MIT) is a
 # browser Minecraft client that renders REAL vanilla block models — so our
-# functional doors, stairs, slabs, glass and iron-bar railings render natively,
+# functional doors, stairs, slabs, glass and fence railings render natively,
 # with no engine patching (contrast ../../blockcraft, a cube-only fork).
 #
 # Pipeline:

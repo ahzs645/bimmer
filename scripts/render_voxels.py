@@ -22,7 +22,11 @@ BLOCK_RGB = {
     "minecraft:gray_concrete": (54, 57, 61),
     "minecraft:light_blue_stained_glass": (74, 180, 214),
     "minecraft:oak_planks": (162, 130, 78),
+    "minecraft:oak_door": (168, 120, 60),
+    "minecraft:oak_fence": (154, 123, 79),
     "minecraft:stone_bricks": (122, 121, 122),
+    "minecraft:stone_brick_stairs": (122, 121, 122),
+    "minecraft:smooth_stone_slab": (159, 159, 159),
     "minecraft:deepslate_tiles": (60, 60, 66),
     "minecraft:light_gray_concrete": (125, 125, 115),
 }
@@ -39,7 +43,8 @@ def load_blocks(path: Path):
             zs.append(int(row["z"]))
             cols.append(row.get("block", ""))
     pts = np.array([xs, ys, zs], dtype=np.int64).T
-    rgb = np.array([BLOCK_RGB.get(c, DEFAULT_RGB) for c in cols], dtype=np.uint8)
+    # strip block-state suffix: colors key off the base id
+    rgb = np.array([BLOCK_RGB.get(c.split("[", 1)[0], DEFAULT_RGB) for c in cols], dtype=np.uint8)
     return pts, rgb
 
 

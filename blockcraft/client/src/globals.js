@@ -1,6 +1,13 @@
 import * as THREE from "three";
 import Ola from "ola";
 import { io } from "socket.io-client";
+import { createLocalSocket } from "./offline/LocalServer";
+
+// Serverless mode: the "server" runs in-browser (static hosting, e.g. GitHub
+// Pages). Enabled at build time (OFFLINE_MODE define) or with ?offline=1.
+export const OFFLINE =
+  (typeof OFFLINE_MODE !== "undefined" && OFFLINE_MODE) ||
+  new URLSearchParams(window.location.search).has("offline");
 
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 10000000); // Camera
 globalThis.camera = camera;
@@ -19,11 +26,14 @@ let g = {};
 g.loaded = 0;
 g.servers = {};
 g.currentServer = undefined;
-g.socket = io({
-  autoConnect: false,
-  forceNew: true,
-  reconnectionAttempts: 2,
-});
+g.socket = OFFLINE
+  ? createLocalSocket()
+  : io({
+      autoConnect: false,
+      forceNew: true,
+      reconnectionAttempts: 2,
+    });
+g.offline = OFFLINE;
 g.initialized = false;
 g.joined = false;
 g.state = 0;

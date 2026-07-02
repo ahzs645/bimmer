@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate a tiny demo blocks.csv that exercises every block *shape* the
 minecraft-web-client renderer handles natively but BlockCraft could not:
-real functional doors, stairs, slabs, glass, and connected iron-bar railings.
+real functional doors, stairs, slabs, glass, and connected fence railings.
 
 This is a hand-authored stand-in for a pipeline `blocks.csv` (same
 `x,y,z,block` schema, same block-state strings as scripts/ifc_to_voxels.py),
@@ -51,11 +51,17 @@ def rows():
         for z in range(W):
             yield x, H, z, "minecraft:white_concrete"
 
-    # fence railing parapet around the roof edge (real post-and-rail models)
-    for x in range(W):
-        for z in range(W):
-            if x in (0, W - 1) or z in (0, W - 1):
-                yield x, H + 1, z, "minecraft:oak_fence"
+    # fence railing parapet around the roof edge (real post-and-rail models).
+    # Connection arms are explicit block-state props, exactly like the
+    # voxelizer emits them: stored saves never get the in-game neighbour
+    # update, so a bare oak_fence would render as disconnected posts.
+    edge = {(x, z) for x in range(W) for z in range(W)
+            if x in (0, W - 1) or z in (0, W - 1)}
+    for x, z in sorted(edge):
+        props = {"north": (x, z - 1) in edge, "south": (x, z + 1) in edge,
+                 "west": (x - 1, z) in edge, "east": (x + 1, z) in edge}
+        state = ",".join(f"{k}={'true' if v else 'false'}" for k, v in sorted(props.items()))
+        yield x, H + 1, z, f"minecraft:oak_fence[{state}]"
 
 
 def main():

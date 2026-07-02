@@ -7,7 +7,7 @@
  * flat panels. This exporter targets zardoy/minecraft-web-client instead,
  * which renders *real vanilla block models*. So we keep every block-state
  * verbatim — `minecraft:oak_door[facing=...,half=...]`, `*_stairs[...]`,
- * `*_slab[type=...]`, stained glass, connected `iron_bars` — and write a
+ * `*_slab[type=...]`, stained glass, connected `oak_fence` — and write a
  * standard Anvil save that the client loads directly (drag-and-drop a zip, or
  * serve the folder). No engine patching, no custom door block.
  *
