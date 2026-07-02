@@ -64,8 +64,10 @@ host wall, so the wall mesh arrives with the holes already in it.
 Each IFC class maps to a coarse *behaviour class*, each class to a Minecraft
 block. Every class is voxelized onto **one shared integer lattice**; when two
 classes land in the same cell, a **priority rule** decides the winner (solid
-structure beats transparent glazing, so the building doesn't read see-through).
-This mirrors the IfcVoxNet "global priority" approach.
+structure beats transparent glazing, so the building doesn't read see-through;
+stairs beat *everything* solid, because stair flights run flush against
+stairwell shaft walls and would otherwise lose their walking path to the wall
+ring at coarse pitches). This mirrors the IfcVoxNet "global priority" approach.
 
 | IFC type | class | Minecraft block |
 |---|---|---|
@@ -76,8 +78,20 @@ This mirrors the IfcVoxNet "global priority" approach.
 | `IfcStair*`, `IfcRamp*` | stair | `stone_bricks` |
 | `IfcWindow`, `IfcPlate`, `IfcCurtainWall` | glass | `light_blue_stained_glass` |
 | `IfcMember` (mullions) | frame | `gray_concrete` |
-| `IfcRailing` | railing | `iron_bars` *(functional)* |
+| `IfcMember` (stair stringers) | stair | `stone_bricks` |
+| `IfcRailing` | railing | `oak_fence` *(with connection states — see below)* |
 | `IfcDoor` | door | `oak_door` *(functional — see below)* |
+
+`IfcMember` is disambiguated by its aggregation: members that decompose an
+`IfcStair`/`IfcRamp` are stair stringers and voxelize with the staircase;
+all others are treated as curtain-wall framing.
+
+Railing fences carry explicit connection states
+(`oak_fence[east=true,north=false,...]`, computed from neighbouring fences and
+full-cube solids). This matters because saved worlds, schematic pastes and
+prismarine-based renderers use the *stored* state — a bare `oak_fence` never
+receives the in-game neighbour update that computes its arms, so it would
+render as a row of disconnected posts.
 
 ### 5. Functional doors (the headline feature)
 Each `IfcDoor` becomes a **real, openable Minecraft door**, not a solid block or
@@ -89,8 +103,14 @@ a bare gap:
 3. A two-half `minecraft:oak_door` is placed at the threshold:
    - `facing` is derived from the **wall normal** (the thinner horizontal axis
      of the door footprint),
+   - the door bottom is anchored to the highest **walkable** surface beside the
+     opening (a probed floor cell must have door-height headroom above it, so
+     walls/mullions/glazing beside the door can't misanchor it), with one shared
+     floor level for all leaves of a door so double doors never step,
    - `half=lower` at floor level + `half=upper` directly above,
-   - `hinge`, `open`, `powered` states set so it pastes as a closed, working door.
+   - `hinge`, `open`, `powered` states set so it pastes as a closed, working
+     door; adjacent leaves get mirrored hinges so double doors meet in the
+     middle.
 
 Block-states are carried through `blocks.csv` as
 `minecraft:oak_door[facing=east,half=lower,...]` and preserved by **both** the

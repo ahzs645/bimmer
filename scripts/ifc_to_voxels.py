@@ -15,9 +15,11 @@ What this does beyond a plain mesh voxelizer:
   plates can become `*_slab`s with --floor-slabs. Both render as real block
   models in the minecraft-web-client renderer (see RENDERERS.md).
 * FUNCTIONAL DOORS: every IfcDoor becomes a real, openable `minecraft:*_door`
-  (two halves, oriented to the wall) sitting in a walk-through opening, instead
-  of a solid block plugging the doorway. IfcRailing -> oak_fence (renders as a
-  real post-and-rail fence; swap CLASS_BLOCKS["railing"] for another *_fence).
+  (two halves, oriented to the wall) sitting in a walk-through opening and
+  anchored on top of the adjacent walking floor, instead of a solid block
+  plugging the doorway. IfcRailing -> oak_fence with explicit connection
+  states so railings render as connected post-and-rail runs (swap
+  CLASS_BLOCKS["railing"] for another *_fence).
 
 Geometry note: IfcOpenShell returns vertices in METRES regardless of the file's
 display unit, so --pitch is in metres (pitch=1.0 -> 1 block per metre).
@@ -86,10 +88,13 @@ CLASS_BLOCKS = {
 }
 
 # When several classes land in one cell, the one LATER in this list wins.
-# Solid/structural beats transparent; stairs beat floors/roofs so a staircase
-# isn't hidden by the slab voxels it overlaps.
+# Solid/structural beats transparent; stairs beat EVERYTHING solid (walls
+# included): stair flights in stairwells run flush against the shaft walls, so
+# at coarse pitches the outer ring of treads lands in the same cells as the
+# wall ring — if walls won, spiral/half-turn staircases lost their walking
+# path and became unclimbable (verified on the UNBC model's spiral stair).
 CLASS_PRIORITY = [
-    "glass", "railing", "frame", "roof", "floor", "stair", "structure", "wall", "other",
+    "glass", "railing", "frame", "roof", "floor", "structure", "wall", "other", "stair",
 ]
 
 # Minecraft block id used for functional doors (must be a *_door)
@@ -148,6 +153,13 @@ def extract(model, threads: int):
                 processed += 1
         elif len(v) and len(f):
             cls = class_for(ifc_type)
+            # IfcMember covers both curtain-wall mullions AND stair stringers;
+            # reclassify members that decompose a stair/ramp assembly so
+            # stringers voxelize with the staircase, not as "frame" concrete.
+            if ifc_type == "IfcMember":
+                dec = model.by_id(shape.id).Decomposes
+                if dec and dec[0].RelatingObject.is_a() in ("IfcStair", "IfcRamp"):
+                    cls = "stair"
             verts_by_class[cls].append(v)
             faces_by_class[cls].append(f + offset_by_class[cls])
             offset_by_class[cls] += len(v)
@@ -293,29 +305,49 @@ def place_doors(winner, grid, door_verts, mode):
     if mode in ("solid", "air"):
         return placed
 
-    # PASS 2: with every opening carved, anchor each leaf to the room floor and
-    # build a door_h-tall, correctly hinged door.
+    # PASS 2: with every opening carved, anchor each door to the room floor and
+    # build door_h-tall, correctly hinged doors.
+    def passable(k):
+        w = winner.get(k)
+        return w is None or "_door" in w[1]
+
     def floor_top(thin_x, cx, cy, mnz):
         # Probe the room cells to either side ALONG THE WALL NORMAL (never along
-        # the wall itself, solid at every height) for the highest floor top near
-        # the sill. Scanning up to mnz+1 also lifts doors whose mesh bottom dips a
-        # cell into the slab (the "half-sunk into the floor" case). Returns None
-        # when no floor voxel is nearby (e.g. a glazed curtain wall).
+        # the wall itself, solid at every height) for the highest WALKABLE
+        # surface near the sill: the top solid cell of the column must have
+        # door-height headroom above it, otherwise the probe hit a wall,
+        # curtain-wall mullion or glazing column, not a floor (anchoring to
+        # those lifted doors a block off the ground). Scanning above mnz also
+        # lifts doors whose mesh bottom dips into the slab (the "half-sunk into
+        # the floor" case) and doors beside thick landings. Returns None when
+        # no walkable surface is nearby (e.g. a fully glazed curtain wall).
         probes = [(cx - 1, cy), (cx + 1, cy)] if thin_x else [(cx, cy - 1), (cx, cy + 1)]
         best = None
         for px, py in probes:
-            for cz in range(mnz + 1, mnz - 4, -1):
+            for cz in range(mnz + 2, mnz - 4, -1):
                 w = winner.get(key(px, py, cz))
-                if w and "_door" not in w[1]:
+                if w is None or "_door" in w[1]:
+                    continue
+                # first (highest) solid cell in this column decides the probe
+                if all(passable(key(px, py, cz + j)) for j in range(1, door_h + 1)):
                     best = cz if best is None else max(best, cz)
-                    break
+                break
         return best
 
     for thin_x, facing, mnz, fixed, coords in plans:
+        # One floor level per door element: leaves of a double door must not
+        # end up a block apart (each probing its own neighbourhood), and
+        # overlapping IfcDoors at the same opening must resolve to the same
+        # bottom so one door's lower half never half-overwrites another.
+        tops = []
         for wv in coords:
             cx, cy = (fixed, wv) if thin_x else (wv, fixed)
             ft = floor_top(thin_x, cx, cy, mnz)
-            bottom = (ft + 1) if ft is not None else mnz
+            if ft is not None:
+                tops.append(ft)
+        bottom = (max(tops) + 1) if tops else mnz
+        for wv in coords:
+            cx, cy = (fixed, wv) if thin_x else (wv, fixed)
             for j in range(door_h):
                 winner[key(cx, cy, bottom + j)] = (
                     100, door_state(facing, "lower" if j == 0 else "upper", "left"))
@@ -325,6 +357,29 @@ def place_doors(winner, grid, door_verts, mode):
             below = key(cx, cy, bottom - 1)
             if below not in winner:
                 winner[below] = (50, FLOOR_CUBE)
+
+    # PASS 2.5: drop unpaired door halves. Two overlapping IfcDoors at one
+    # opening can resolve to bottoms one cell apart (their meshes differ), so
+    # the later door's lower half overwrites the earlier door's upper, leaving
+    # a headless lower half beneath a complete door. Keep every upper+lower
+    # pair (scanning top-down, so stacked storeys survive) and carve the rest.
+    door_cols: dict[tuple, dict] = defaultdict(dict)
+    for k, (_, b) in list(winner.items()):
+        if "_door" in b:
+            z = k // plane
+            rem = k - z * plane
+            door_cols[(rem - (rem // X) * X, rem // X)][z] = "upper" in b
+    for (cx, cy), col in door_cols.items():
+        paired = set()
+        for cz in sorted(col, reverse=True):
+            if cz in paired:
+                continue
+            if col[cz] and (cz - 1) in col and not col[cz - 1]:
+                paired.add(cz)
+                paired.add(cz - 1)
+        for cz in col:
+            if cz not in paired:
+                winner.pop(key(cx, cy, cz), None)
 
     # PASS 3: mirror double-door hinges. A run of adjacent same-facing lower
     # halves at the same height is one visual double door — even when the leaves
@@ -386,25 +441,105 @@ def refine_stairs(winner, grid):
         return int(x) + X * int(y) + plane * int(z)
 
     occupied = set(winner.keys())
-    stair_keys = [k for k, (_, b) in winner.items() if b == STAIR_CUBE]
+    stair_cells = {k for k, (_, b) in winner.items() if b == STAIR_CUBE}
     converted = 0
-    for k in stair_keys:
+    facing_at: dict[int, str] = {}   # refined stair key -> facing (for corner shapes)
+    for k in stair_cells:
         z = k // plane
         rem = k - z * plane
         y = rem // X
         x = rem - y * X
         if key(x, y, z + 1) in occupied:           # top not exposed -> underside cube
             continue
+        # A rise counts only when the raised neighbour is itself part of the
+        # staircase: a wall or a railing fence one level up beside a tread must
+        # not steer the facing.
         rises = [(dx, dy) for (dx, dy) in GRID_TO_FACING
-                 if key(x + dx, y + dy, z + 1) in occupied]
+                 if key(x + dx, y + dy, z + 1) in stair_cells]
         if not rises or len(rises) >= 3:            # flat landing / ridge -> leave cube
             continue
         # prefer the rise whose opposite (downhill) side is open tread
         facing_dir = next((d for d in rises if key(x - d[0], y - d[1], z) not in occupied), rises[0])
-        facing = GRID_TO_FACING[facing_dir]
-        winner[k] = (winner[k][0], f"{STAIR_SHAPED}[facing={facing},half=bottom,shape=straight]")
+        facing_at[k] = GRID_TO_FACING[facing_dir]
         converted += 1
+
+    # Corner shapes (vanilla algorithm): a stair whose uphill neighbour turns
+    # becomes an outer corner, one whose downhill neighbour turns becomes an
+    # inner corner. Without this, winding stairs (spiral / curved / half-turn
+    # flights) paste with the stored shape=straight and show notched corners --
+    # saved worlds and schematic pastes do NOT recompute the shape.
+    F2G = {v: k for k, v in GRID_TO_FACING.items()}
+    CCW = {"north": "west", "west": "south", "south": "east", "east": "north"}
+
+    def shape_for(k, x, y, z, facing):
+        fdx, fdy = F2G[facing]
+        uphill = facing_at.get(key(x + fdx, y + fdy, z))
+        if uphill is not None and abs(F2G[uphill][0]) != abs(fdx):  # perpendicular axis
+            udx, udy = F2G[uphill]
+            side = facing_at.get(key(x - udx, y - udy, z))
+            if side != facing:
+                return "outer_left" if uphill == CCW[facing] else "outer_right"
+        downhill = facing_at.get(key(x - fdx, y - fdy, z))
+        if downhill is not None and abs(F2G[downhill][0]) != abs(fdx):
+            ddx, ddy = F2G[downhill]
+            side = facing_at.get(key(x + ddx, y + ddy, z))
+            if side != facing:
+                return "inner_left" if downhill == CCW[facing] else "inner_right"
+        return "straight"
+
+    for k, facing in facing_at.items():
+        z = k // plane
+        rem = k - z * plane
+        y = rem // X
+        x = rem - y * X
+        shape = shape_for(k, x, y, z, facing)
+        winner[k] = (winner[k][0], f"{STAIR_SHAPED}[facing={facing},half=bottom,shape={shape}]")
     return converted
+
+
+def refine_fences(winner, grid):
+    """Write connection states onto railing fence blocks.
+
+    Fence arms (north/east/south/west) are stored block-state properties: a
+    bare `minecraft:oak_fence` renders as an isolated post in saved worlds,
+    schematic pastes and prismarine-based renderers, because nothing triggers
+    the in-game neighbour update that would compute the connections. Connect
+    each fence to adjacent fences and to full-cube solids (not doors, stairs,
+    or slabs, which vanilla fences don't visually join on those faces).
+    Returns the number of fences given at least one connection.
+    """
+    X, plane = grid["X"], grid["plane"]
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    fence_block = CLASS_BLOCKS["railing"]
+    fence_keys = [k for k, (_, b) in winner.items() if b.split("[")[0] == fence_block]
+    fence_set = set(fence_keys)
+
+    def connects(k):
+        if k in fence_set:
+            return True
+        w = winner.get(k)
+        if w is None:
+            return False
+        b = w[1]
+        return not any(s in b for s in ("_door", "_stairs[", "_slab", "_fence"))
+
+    # grid (dx, dy) -> fence arm property, same axis mapping as GRID_TO_FACING
+    arms = {"north": (0, 1), "east": (1, 0), "south": (0, -1), "west": (-1, 0)}
+    connected = 0
+    for k in fence_keys:
+        z = k // plane
+        rem = k - z * plane
+        y = rem // X
+        x = rem - y * X
+        props = {a: connects(key(x + dx, y + dy, z)) for a, (dx, dy) in arms.items()}
+        if any(props.values()):
+            connected += 1
+        state = ",".join(f"{a}={'true' if v else 'false'}" for a, v in sorted(props.items()))
+        winner[k] = (winner[k][0], f"{fence_block}[{state}]")
+    return connected
 
 
 def refine_floor_slabs(winner, grid):
@@ -507,6 +642,8 @@ def main() -> None:
     if args.floor_slabs:
         slabs_converted = refine_floor_slabs(winner, grid)
         print(f"Refined {slabs_converted} thin floor cubes -> slabs", flush=True)
+    fences_connected = refine_fences(winner, grid)
+    print(f"Connected {fences_connected} railing fences", flush=True)
 
     write_stats = unpack_and_write(winner, grid, out_dir)
 
@@ -519,6 +656,7 @@ def main() -> None:
         "stairs_mode": args.stairs,
         "stairs_converted": stairs_converted,
         "slabs_converted": slabs_converted,
+        "fences_connected": fences_connected,
         "world_bounds_min_m": grid["all_min"].tolist(),
         "model_size_m_xyz": (grid["dims"] * args.pitch).tolist(),
         **ex_stats,
