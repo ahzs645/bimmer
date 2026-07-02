@@ -39,13 +39,21 @@ def main() -> None:
                     str(BC / "client/assets/textures/blocks")], check=True)
     subprocess.run([sys.executable, str(ROOT / "scripts/export_blockcraft.py"), str(blocks_csv)], check=True)
 
+    # The serverless (static / GitHub Pages) build fetches building.json over
+    # HTTP — mirror the server copy into the client's public assets.
+    import shutil
+    shutil.copyfile(BC / "server/building.json", BC / "client/public/building.json")
+    print(f"Copied building.json -> {BC / 'client/public/building.json'} (serverless build)")
+
     print("\n" + "=" * 60)
     print("BlockCraft ready (door textures + building.json regenerated).")
     print("First time only:")
     print("  ( cd blockcraft/server && npm install )")
     print("  ( cd blockcraft/client && npm install three && npm install )")
-    print("Run:   scripts/run_blockcraft.sh")
+    print("Run (multiplayer):  scripts/run_blockcraft.sh")
     print("Open:  http://localhost:3001  -> Direct Connect (localhost:3001)")
+    print("Run (serverless):   scripts/build_blockcraft_static.sh  ->  dist/ is a")
+    print("                    static site (GitHub Pages ready), no Node server.")
     print("=" * 60)
 
 

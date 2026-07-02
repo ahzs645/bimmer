@@ -1,0 +1,52 @@
+name: Deploy serverless BlockCraft to GitHub Pages
+
+# Builds the SERVERLESS BlockCraft client (OFFLINE_MODE=1) — the whole world,
+# including the UNBC building from the committed
+# blockcraft/client/public/building.json, runs in the visitor's browser.
+# Enable Pages (Settings -> Pages -> Source: GitHub Actions) and run this
+# workflow (it also runs on pushes to main that touch blockcraft/).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "blockcraft/**"
+      - ".github/workflows/blockcraft-pages.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install client dependencies
+        working-directory: blockcraft/client
+        run: npm ci || npm install
+      - name: Build static serverless client
+        working-directory: blockcraft/client
+        run: OFFLINE_MODE=1 npx webpack --mode=production
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: blockcraft/client/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

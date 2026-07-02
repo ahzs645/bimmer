@@ -152,7 +152,15 @@ $(document).ready(function () {
   if (DEV_MODE) {
     // TODO: Add callbacks to nextState() so setTimeout isn't needed
     nextState();
-    $("#direct-connect-input").val("localhost:3001");
+    $("#direct-connect-input").val(g.offline ? "offline" : "localhost:3001");
+    nextState();
+    nextState();
+    setTimeout(nextState, 2000);
+  } else if (g.offline) {
+    // Serverless build: no server list to browse — jump straight into the
+    // in-browser world (same auto-progression as DEV_MODE).
+    nextState();
+    $("#direct-connect-input").val("offline");
     nextState();
     nextState();
     setTimeout(nextState, 2000);

@@ -1,5 +1,35 @@
 # Rendering the building in BlockCraft (walkable, flat world)
 
+## Serverless mode — static site / GitHub Pages (no Node server)
+
+The client can now run **without any server**: an in-browser "local server"
+(`client/src/offline/LocalServer.js`) emulates the socket protocol against the
+same flat-world + building generator, RLE chunk codec and block registry
+(`blockcraft/shared/registry.js`) the Node server uses. Single-player,
+first-person, creative/fly, functional doors — all client-side.
+
+```sh
+.venv/bin/python scripts/setup_blockcraft.py out/unbc_1m/blocks.csv  # building.json
+scripts/build_blockcraft_static.sh serve   # build dist/ + test on :3003
+```
+
+`blockcraft/client/dist/` is then a plain static site — host it anywhere. For
+**GitHub Pages**: enable Pages (Settings → Pages → Source: *GitHub Actions*)
+and run the **“Deploy serverless BlockCraft to GitHub Pages”** workflow
+(`.github/workflows/blockcraft-pages.yml`; it also auto-runs on pushes to
+`main` touching `blockcraft/`). The committed
+`blockcraft/client/public/building.json` snapshot is what gets deployed, so CI
+never needs the IFC. Notes:
+
+- `SharedArrayBuffer` needs cross-origin isolation; static hosts can't set
+  COOP/COEP headers, so `index.html` loads the vendored MIT
+  `coi-serviceworker.min.js` shim (no-op when headers are already present).
+- Dev equivalent without a build: `npm start` + open
+  `http://localhost:3001/?offline=1`.
+- Multiplayer mode below still works exactly as before — offline mode only
+  engages via the `OFFLINE_MODE=1` build flag or `?offline=1`.
+
+
 This makes the voxelized UNBC building **walkable in a browser** using a
 **modified fork of [BlockCraft](https://github.com/ChiefElite/blockcraft-public)**
 (a WebGL voxel game — Three.js client + Node server) on a **flat (superflat)

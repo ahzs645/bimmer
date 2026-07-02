@@ -35,7 +35,9 @@ Thumbs.db
 # Only ignore its dependencies, build output, and generated world data.
 /blockcraft/**/node_modules/
 /blockcraft/client/dist/
-# building.json is generated from the IFC (export_blockcraft.py)
+# building.json is generated from the IFC (export_blockcraft.py). The server
+# copy is ignored; the client/public copy IS committed so the serverless
+# GitHub Pages build works without the (non-committed) IFC.
 /blockcraft/server/building.json
 # world saves (sample worlds + the generated flat world)
 /blockcraft/server/saves/
