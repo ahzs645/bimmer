@@ -497,6 +497,51 @@ def place_doors(winner, grid, door_verts, mode, overrides=None):
             if below not in winner:
                 winner[below] = (50, FLOOR_CUBE)
 
+    # PASS 2c: anchor storefront doors into their glazing. A curtain-wall
+    # entrance door is flanked by glass too thin to voxelize at door level
+    # (mullion/frame geometry crowds it out), leaving the leaf standing alone
+    # in the plaza while the glazing starts a cell above. Where a leaf's side
+    # cell is empty at door height but the SAME column holds glass or frame
+    # just above, pull that glazing down to the floor beside the leaf.
+    glass_prio = CLASS_PRIORITY.index("glass")
+    glass_block = CLASS_BLOCKS["glass"]
+    anchor_blocks = (CLASS_BLOCKS["glass"], CLASS_BLOCKS["frame"])
+
+    def side_cell(fixed, thin_x, sv):
+        return (fixed, sv) if thin_x else (sv, fixed)
+
+    for thin_x, facing, bottom, fixed, coords, depth in plans:
+        lo, hi = min(coords), max(coords)
+
+        def occupied_at(sv):
+            cx, cy = side_cell(fixed, thin_x, sv)
+            return any(key(cx, cy, bottom + j) in winner for j in range(door_h))
+
+        for wv, sgn in ((lo, -1), (hi, 1)):
+            if occupied_at(wv + sgn):
+                continue
+            cx, cy = side_cell(fixed, thin_x, wv + sgn)
+            # (a) glazing directly above the flanking cell -> pull it down
+            above = [winner.get(key(cx, cy, bottom + door_h + j)) for j in range(0, 2)]
+            if any(w is not None and w[1].split("[")[0] in anchor_blocks for w in above):
+                for j in range(door_h):
+                    winner[key(cx, cy, bottom + j)] = (glass_prio, glass_block)
+                continue
+            # (b) whole glazing bay missing: if the door is FREE-standing (open
+            # on both sides), bridge to the nearest solid within 3 cells with
+            # glass so the entrance reads as a storefront, not a lone leaf.
+            # One-sided doors are left alone — their open side is usually a
+            # real passage.
+            if occupied_at(lo - 1) or occupied_at(hi + 1):
+                continue
+            for dist in (2, 3):
+                if occupied_at(wv + sgn * dist):
+                    for g in range(1, dist):
+                        gx, gy = side_cell(fixed, thin_x, wv + sgn * g)
+                        for j in range(door_h):
+                            winner[key(gx, gy, bottom + j)] = (glass_prio, glass_block)
+                    break
+
     # PASS 2.5: drop unpaired door halves. Two overlapping IfcDoors at one
     # opening can resolve to bottoms one cell apart (their meshes differ), so
     # the later door's lower half overwrites the earlier door's upper, leaving
