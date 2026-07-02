@@ -371,7 +371,30 @@ def place_doors(winner, grid, door_verts, mode, overrides=None):
             mid = (wide_lo + wide_hi) // 2
             start = max(wide_lo, mid - (n - 1) // 2)
             coords = [min(start + i, wide_hi) for i in range(n)]
-            fixed = (mnx + mxx) // 2 if thin_x else (mny + mxy) // 2
+            # Put the leaf in the WALL PLANE, not the bbox middle: a door with
+            # a deep frame/threshold spans 2+ cells along its normal, and the
+            # middle cell can be the one proud of the wall — the door then
+            # stands in the corridor beside a hole. Score each depth cell by
+            # the solid wall cells flanking the opening at door height and
+            # take the best (ties -> middle, the old behaviour).
+            d_lo, d_hi = (mnx, mxx) if thin_x else (mny, mxy)
+            mid_d = (d_lo + d_hi) // 2
+            fixed = mid_d
+            if d_hi > d_lo:
+                flanks = (wide_lo - 1, wide_hi + 1)
+                best = -1
+                for dv in range(d_lo, d_hi + 1):
+                    solid = 0
+                    for wv in flanks:
+                        for cz in range(mnz, mnz + 3):
+                            kk = key(dv, wv, cz) if thin_x else key(wv, dv, cz)
+                            w = winner.get(kk)
+                            if w is not None and "_door" not in w[1]:
+                                solid += 1
+                    score = solid * 10 - abs(dv - mid_d)   # prefer centre on ties
+                    if score > best:
+                        best = score
+                        fixed = dv
             return coords, fixed, n
 
         def openness(thin_x, coords, fixed):
@@ -719,6 +742,18 @@ def refine_fences(winner, grid):
         z = k // plane
         rem = k - z * plane
         if key(rem - (rem // X) * X, rem // X, z - 1) in stacked:
+            winner.pop(k, None)
+            fence_set.discard(k)
+
+    # Stair-flight railings round onto the treads themselves at coarse pitch:
+    # a fence standing ON a stair block plugs the flight (fences collide 1.5
+    # blocks tall), so the staircase becomes unwalkable. Drop those — the
+    # treads matter more than the guardrail. Fences on floors/decks stay.
+    for k in list(fence_set):
+        z = k // plane
+        rem = k - z * plane
+        below = winner.get(key(rem - (rem // X) * X, rem // X, z - 1))
+        if below is not None and below[1].split("[")[0] in (STAIR_CUBE, STAIR_SHAPED):
             winner.pop(k, None)
             fence_set.discard(k)
     fence_keys = list(fence_set)
