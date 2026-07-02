@@ -321,6 +321,7 @@ def place_doors(winner, grid, door_verts, mode, overrides=None):
     # no door's carve skews a neighbour's floor probe), then carve, then place.
     plans = []          # functional-door placements
     records = []        # per-door placement info (for doors.csv / overrides)
+    plan_recs = []      # record of plans[i] (records also holds skipped doors)
     placed = 0
     for d in door_verts:
         ov = overrides.get(d.get("gid"), {})
@@ -437,10 +438,37 @@ def place_doors(winner, grid, door_verts, mode, overrides=None):
         records.append({"gid": d.get("gid"), "facing": facing, "leaves": n_leaves,
                         "bottom": bottom, "fixed": fixed, "coords": coords,
                         "thin_x": thin_x, "sill": mnz})
+        plan_recs.append(records[-1])
         placed += 1
 
     if mode in ("solid", "air"):
         return placed, records
+
+    # Harmonize levels of nearby doors on the same wall that share the same
+    # IFC sill: their floor probes can diverge by one cell (a slab edge that
+    # rounds a cell higher beside one of them), which reads as doors randomly
+    # jumping half a step along a corridor. When sills agree the doors belong
+    # at ONE level — snap the cluster to the bottom closest to the sill.
+    def plan_span(pl):
+        return min(pl[4]), max(pl[4])
+    for i in range(len(plans)):
+        ti, fi, bi, xi, ci, di = plans[i]
+        si = plan_recs[i]["sill"]
+        for j in range(i + 1, len(plans)):
+            tj, fj, bj, xj, cj, dj = plans[j]
+            if ti != tj or abs(xi - xj) > 1 or bi == bj:
+                continue
+            if plan_recs[j]["sill"] != si:
+                continue
+            lo_i, hi_i = plan_span(plans[i])
+            lo_j, hi_j = plan_span(plans[j])
+            if max(lo_i, lo_j) - min(hi_i, hi_j) > 3:   # wide-axis gap
+                continue
+            best = min(bi, bj, key=lambda b: (abs(b - si), b))
+            plans[i] = (ti, fi, best, xi, ci, di)
+            plans[j] = (tj, fj, best, xj, cj, dj)
+            plan_recs[i]["bottom"] = plan_recs[j]["bottom"] = best
+            bi = best
 
     # PASS 2a: carve every passage — ONLY the passage. The old full-bbox carve
     # also wiped the glazing/framing around wide-framed doors (curtain-wall and
