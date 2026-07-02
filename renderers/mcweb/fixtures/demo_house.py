@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate a tiny demo blocks.csv that exercises every block *shape* the
 minecraft-web-client renderer handles natively but BlockCraft could not:
-real functional doors, stairs, slabs, glass, and connected iron-bar railings.
+real functional doors, stairs, slabs, glass, and connected fence railings.
 
 This is a hand-authored stand-in for a pipeline `blocks.csv` (same
 `x,y,z,block` schema, same block-state strings as scripts/ifc_to_voxels.py),

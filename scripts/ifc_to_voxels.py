@@ -11,9 +11,16 @@ What this does beyond a plain mesh voxelizer:
   glazing, concrete for walls, smooth stone for slabs, ...) on a shared integer
   voxel grid, resolving overlaps with a per-class priority rule.
 * REAL STAIRS: stepped stair-class cubes are refined into oriented
-  `minecraft:*_stairs` blocks (facing from the ascent direction); thin floor
-  plates can become `*_slab`s with --floor-slabs. Both render as real block
-  models in the minecraft-web-client renderer (see RENDERERS.md).
+  `minecraft:*_stairs` blocks (facing from the ascent direction, corner shapes
+  via the vanilla algorithm); thin floor plates can become `*_slab`s with
+  --floor-slabs. Both render as real block models in the minecraft-web-client
+  renderer (see RENDERERS.md).
+* SPIRAL STAIRS: SPIRAL_STAIR assemblies are rebuilt as clean walkable spirals
+  (newel + winding oriented treads, ends anchored to the measured start/end
+  angles) instead of voxelized into an unclimbable blob (--spiral).
+* OVERRIDES: --overrides JSON can pin individual doors by IfcDoor GlobalId
+  (skip / raise / facing / leaves); out/<name>/doors.csv maps every door's
+  GlobalId to where it landed.
 * FUNCTIONAL DOORS: every IfcDoor becomes a real, openable `minecraft:*_door`
   (two halves, oriented to the wall) sitting in a walk-through opening and
   anchored on top of the adjacent walking floor, instead of a solid block
@@ -118,10 +125,29 @@ def class_for(ifc_type: str) -> str:
     return SEMANTIC_CLASSES.get(ifc_type, "other")
 
 
-def extract(model, threads: int):
-    """Iterate geometry once. Returns (solid meshes by class, list of door meshes, stats)."""
+def extract(model, threads: int, spiral_mode: str = "synth"):
+    """Iterate geometry once.
+
+    Returns (solid meshes by class, door meshes, spiral assemblies, stats).
+    With spiral_mode='synth', the flights/stringers of every SPIRAL_STAIR
+    assembly are routed to `spirals` (per assembly) instead of the merged
+    'stair' class, so synth_spiral_stairs() can replace them with a clean,
+    walkable Minecraft spiral (their voxelization at coarse pitch is a
+    jumpy, wall-pinched blob).
+    """
     settings = ifcopenshell.geom.settings()
     settings.set("use-world-coords", True)
+
+    # product id -> spiral assembly id, for SPIRAL_STAIR flights and stringers
+    spiral_part_of: dict[int, int] = {}
+    if spiral_mode == "synth":
+        for st in model.by_type("IfcStair"):
+            if getattr(st, "ShapeType", None) != "SPIRAL_STAIR":
+                continue
+            for rel in st.IsDecomposedBy or []:
+                for obj in rel.RelatedObjects:
+                    if obj.is_a() in ("IfcStairFlight", "IfcMember"):
+                        spiral_part_of[obj.id()] = st.id()
 
     iterator = ifcopenshell.geom.iterator(settings, model, threads)
     if not iterator.initialize():
@@ -130,7 +156,8 @@ def extract(model, threads: int):
     verts_by_class: dict[str, list[np.ndarray]] = defaultdict(list)
     faces_by_class: dict[str, list[np.ndarray]] = defaultdict(list)
     offset_by_class: dict[str, int] = defaultdict(int)
-    door_meshes: list[dict] = []  # [{verts, width_m}] in world metres
+    door_meshes: list[dict] = []  # [{verts, width_m, gid}] in world metres
+    spirals: dict[int, list[np.ndarray]] = defaultdict(list)  # assembly id -> vert arrays
     unit_scale = ifcopenshell.util.unit.calculate_unit_scale(model)  # file unit -> metres
     type_counts: Counter = Counter()
     excluded_counts: Counter = Counter()
@@ -138,7 +165,8 @@ def extract(model, threads: int):
 
     while True:
         shape = iterator.get()
-        ifc_type = model.by_id(shape.id).is_a()
+        element = model.by_id(shape.id)
+        ifc_type = element.is_a()
         geom = shape.geometry
         v = np.asarray(geom.verts, dtype=np.float64).reshape((-1, 3))
         f = np.asarray(geom.faces, dtype=np.int64).reshape((-1, 3))
@@ -147,17 +175,22 @@ def extract(model, threads: int):
             excluded_counts[ifc_type] += 1
         elif ifc_type in DOOR_TYPES:
             if len(v):
-                w = getattr(model.by_id(shape.id), "OverallWidth", None)
-                door_meshes.append({"verts": v, "width_m": (w * unit_scale) if w else None})
+                w = getattr(element, "OverallWidth", None)
+                door_meshes.append({"verts": v, "width_m": (w * unit_scale) if w else None,
+                                    "gid": element.GlobalId})
                 type_counts[ifc_type] += 1
                 processed += 1
+        elif shape.id in spiral_part_of and len(v):
+            spirals[spiral_part_of[shape.id]].append(v)
+            type_counts[ifc_type] += 1
+            processed += 1
         elif len(v) and len(f):
             cls = class_for(ifc_type)
             # IfcMember covers both curtain-wall mullions AND stair stringers;
             # reclassify members that decompose a stair/ramp assembly so
             # stringers voxelize with the staircase, not as "frame" concrete.
             if ifc_type == "IfcMember":
-                dec = model.by_id(shape.id).Decomposes
+                dec = element.Decomposes
                 if dec and dec[0].RelatingObject.is_a() in ("IfcStair", "IfcRamp"):
                     cls = "stair"
             verts_by_class[cls].append(v)
@@ -181,8 +214,9 @@ def extract(model, threads: int):
         "excluded_counts": dict(excluded_counts),
         "solid_faces_by_class": {c: int(len(m.faces)) for c, m in meshes.items()},
         "door_elements": len(door_meshes),
+        "spiral_assemblies": len(spirals),
     }
-    return meshes, door_meshes, stats
+    return meshes, door_meshes, spirals, stats
 
 
 def voxelize_solids(meshes, door_verts, pitch, fill):
@@ -229,13 +263,16 @@ def voxelize_solids(meshes, door_verts, pitch, fill):
     return winner, grid, per_class_voxels
 
 
-def place_doors(winner, grid, door_verts, mode):
+def place_doors(winner, grid, door_verts, mode, overrides=None):
     """Carve each door opening to air and place a functional two-half door.
 
     mode: 'functional' (real openable door), 'air' (just a passable gap), or
     'solid' (leave a wood block plugging the opening).
-    Returns the number of door instances placed.
+    overrides: optional per-door dict keyed by IfcDoor GlobalId (see
+    --overrides): {"skip": bool, "raise": int, "facing": str, "leaves": int}.
+    Returns (number of door instances placed, per-door placement records).
     """
+    overrides = overrides or {}
     all_min, dims = grid["all_min"], grid["dims"]
     X, plane, pitch = grid["X"], grid["plane"], grid["pitch"]
 
@@ -249,13 +286,47 @@ def place_doors(winner, grid, door_verts, mode):
         return (f"{DOOR_BLOCK}[facing={facing},half={half},"
                 f"hinge={hinge},open=false,powered=false]")
 
-    # PASS 1: carve every opening to air FIRST. Clearing all openings before
-    # placing any leaf is essential — adjacent doorways share cells, so a
-    # per-door "clear then place" lets one door's carve wipe a neighbour's
-    # freshly placed leaf (leaving half-height, upper-less doors).
-    plans = []          # functional-door placement, resolved in pass 2
+    def passable(k):
+        w = winner.get(k)
+        return w is None or "_door" in w[1]
+
+    def sill_bottom(thin_x, cx, cy, mnz):
+        # Probe the room cells to either side ALONG THE WALL NORMAL (never along
+        # the wall itself, solid at every height) for walkable surfaces near the
+        # sill: a solid cell with door-height headroom above it (walls, mullions
+        # and glazing columns fail the headroom test; fences aren't floors).
+        # Among all candidates pick the one CLOSEST TO THE IFC SILL (the door
+        # mesh bottom) — the sill is authoritative. Taking the highest surface
+        # instead hoisted 1000+ facade doors onto adjacent roof decks/terraces
+        # a couple of blocks above their true floor. Returns None when no
+        # walkable surface is nearby (e.g. a fully glazed curtain wall).
+        probes = [(cx - 1, cy), (cx + 1, cy)] if thin_x else [(cx, cy - 1), (cx, cy + 1)]
+        cands = []
+        for px, py in probes:
+            for cz in range(mnz + 2, mnz - 4, -1):
+                w = winner.get(key(px, py, cz))
+                if w is None or "_door" in w[1] or "_fence" in w[1]:
+                    continue
+                if all(passable(key(px, py, cz + j)) for j in range(1, door_h + 1)):
+                    cands.append(cz + 1)   # bottom = surface + 1
+        # Trust the IFC sill: a "surface" more than 2 cells from it is not this
+        # door's floor (it's a roof/deck on top of the wall enclosing a plugged
+        # doorway) — better to sit exactly at the sill and carve there.
+        cands = [b for b in cands if abs(b - mnz) <= 2]
+        if not cands:
+            return None
+        return min(cands, key=lambda b: (abs(b - mnz), b))
+
+    # PASS 1: plan every door on the PRISTINE grid (probing before any carve so
+    # no door's carve skews a neighbour's floor probe), then carve, then place.
+    plans = []          # functional-door placements
+    records = []        # per-door placement info (for doors.csv / overrides)
     placed = 0
     for d in door_verts:
+        ov = overrides.get(d.get("gid"), {})
+        if ov.get("skip"):
+            records.append({"gid": d.get("gid"), "skipped": True})
+            continue
         v = d["verts"]
         idx = np.clip(np.round((v - all_min) / pitch).astype(np.int64), 0, dims - 1)
         # mesh index space: axis0=x, axis1=y(plan), axis2=z(up)
@@ -270,90 +341,107 @@ def place_doors(winner, grid, door_verts, mode):
             placed += 1
             continue
 
-        # Clear the whole opening footprint (all heights) to air so it is walkable.
-        for x in range(mnx, mxx + 1):
-            for y in range(mny, mxy + 1):
-                for z in range(mnz, mxz + 1):
-                    winner.pop(key(x, y, z), None)
-
         if mode == "air":
+            # Clear the whole opening footprint (all heights) to a passable gap.
+            for x in range(mnx, mxx + 1):
+                for y in range(mny, mxy + 1):
+                    for z in range(mnz, mxz + 1):
+                        winner.pop(key(x, y, z), None)
             placed += 1
             continue
 
-        # Functional door(s): face along the thin horizontal axis (= wall normal).
-        # Orientation is decided from the RAW METRE extents (thin ~0.15 m vs wide
-        # ~0.9 m), not the voxel-cell footprint, which is ambiguous at 1 m (both
-        # round to 1 cell). Leaf COUNT comes from the IFC OverallWidth.
+        # Functional door(s): face along the wall normal. The mesh extents give
+        # a first guess (thin ~0.15 m axis = normal), but door families with
+        # deep frames/reveals are thinner along the WRONG axis — probing along
+        # the wall then anchors the door to the top of the wall (one whole
+        # family here landed on the roof). So both axes are scored by how OPEN
+        # their probe columns are at sill level (a doorway has room/air on both
+        # sides of its normal; along the wall it's solid), and the open axis
+        # wins; mesh extents only break ties.
         # MC mapping at unpack: mc_x = mesh_x, mc_z = mesh_y.
-        ex_m = float(v[:, 0].max() - v[:, 0].min())
-        ey_m = float(v[:, 1].max() - v[:, 1].min())
-        thin_x = ex_m <= ey_m
-        facing = "east" if thin_x else "south"  # east -> faces +/-x, south -> faces +/-z
-        wide_lo, wide_hi = (mny, mxy) if thin_x else (mnx, mxx)
-        wide_cells = wide_hi - wide_lo + 1
-        # Fill the opening width with door cells (OverallWidth in cells, pitch-aware:
-        # at 1 m a 0.9 m door is 1 cell; at 0.5 m it is ~2 contiguous cells).
-        n_leaves = max(1, round(d["width_m"] / pitch)) if d.get("width_m") else 1
-        n_leaves = min(n_leaves, wide_cells)
-        mid = (wide_lo + wide_hi) // 2
-        start = max(wide_lo, mid - (n_leaves - 1) // 2)
-        coords = [min(start + i, wide_hi) for i in range(n_leaves)]
-        fixed = (mnx + mxx) // 2 if thin_x else (mny + mxy) // 2
-        plans.append((thin_x, facing, mnz, fixed, coords))
-        placed += 1
+        def config(thin_x):
+            wide_lo, wide_hi = (mny, mxy) if thin_x else (mnx, mxx)
+            wide_cells = wide_hi - wide_lo + 1
+            # Fill the opening width with door cells (OverallWidth in cells,
+            # pitch-aware: at 1 m a 0.9 m door is 1 cell; at 0.5 m ~2 cells).
+            n = max(1, round(d["width_m"] / pitch)) if d.get("width_m") else 1
+            if ov.get("leaves"):
+                n = int(ov["leaves"])
+            n = min(n, wide_cells)
+            mid = (wide_lo + wide_hi) // 2
+            start = max(wide_lo, mid - (n - 1) // 2)
+            coords = [min(start + i, wide_hi) for i in range(n)]
+            fixed = (mnx + mxx) // 2 if thin_x else (mny + mxy) // 2
+            return coords, fixed, n
 
-    if mode in ("solid", "air"):
-        return placed
+        def openness(thin_x, coords, fixed):
+            total = 0
+            for wv in coords:
+                cx, cy = (fixed, wv) if thin_x else (wv, fixed)
+                probes = [(cx - 1, cy), (cx + 1, cy)] if thin_x else [(cx, cy - 1), (cx, cy + 1)]
+                for px, py in probes:
+                    for cz in range(mnz, mnz + 3):
+                        if key(px, py, cz) not in winner:
+                            total += 1
+            return total
 
-    # PASS 2: with every opening carved, anchor each door to the room floor and
-    # build door_h-tall, correctly hinged doors.
-    def passable(k):
-        w = winner.get(k)
-        return w is None or "_door" in w[1]
-
-    def floor_top(thin_x, cx, cy, mnz):
-        # Probe the room cells to either side ALONG THE WALL NORMAL (never along
-        # the wall itself, solid at every height) for the highest WALKABLE
-        # surface near the sill: the top solid cell of the column must have
-        # door-height headroom above it, otherwise the probe hit a wall,
-        # curtain-wall mullion or glazing column, not a floor (anchoring to
-        # those lifted doors a block off the ground). Scanning above mnz also
-        # lifts doors whose mesh bottom dips into the slab (the "half-sunk into
-        # the floor" case) and doors beside thick landings. Returns None when
-        # no walkable surface is nearby (e.g. a fully glazed curtain wall).
-        probes = [(cx - 1, cy), (cx + 1, cy)] if thin_x else [(cx, cy - 1), (cx, cy + 1)]
-        best = None
-        for px, py in probes:
-            for cz in range(mnz + 2, mnz - 4, -1):
-                w = winner.get(key(px, py, cz))
-                if w is None or "_door" in w[1]:
-                    continue
-                # first (highest) solid cell in this column decides the probe
-                if all(passable(key(px, py, cz + j)) for j in range(1, door_h + 1)):
-                    best = cz if best is None else max(best, cz)
-                break
-        return best
-
-    for thin_x, facing, mnz, fixed, coords in plans:
+        cfg_x, cfg_y = config(True), config(False)
+        open_x, open_y = openness(True, *cfg_x[:2]), openness(False, *cfg_y[:2])
+        if open_x != open_y:
+            thin_x = open_x > open_y
+        else:
+            ex_m = float(v[:, 0].max() - v[:, 0].min())
+            ey_m = float(v[:, 1].max() - v[:, 1].min())
+            thin_x = ex_m <= ey_m
+        if ov.get("facing"):            # override wins outright
+            thin_x = ov["facing"] in ("east", "west")
+        facing = ov.get("facing") or ("east" if thin_x else "south")
+        coords, fixed, n_leaves = cfg_x if thin_x else cfg_y
         # One floor level per door element: leaves of a double door must not
         # end up a block apart (each probing its own neighbourhood), and
         # overlapping IfcDoors at the same opening must resolve to the same
         # bottom so one door's lower half never half-overwrites another.
-        tops = []
+        bottoms = []
         for wv in coords:
             cx, cy = (fixed, wv) if thin_x else (wv, fixed)
-            ft = floor_top(thin_x, cx, cy, mnz)
-            if ft is not None:
-                tops.append(ft)
-        bottom = (max(tops) + 1) if tops else mnz
+            b = sill_bottom(thin_x, cx, cy, mnz)
+            if b is not None:
+                bottoms.append(b)
+        bottom = min(bottoms, key=lambda b: (abs(b - mnz), b)) if bottoms else mnz
+        bottom += int(ov.get("raise", 0))
+        depth = (mnx, mxx) if thin_x else (mny, mxy)
+        plans.append((thin_x, facing, bottom, fixed, coords, depth))
+        records.append({"gid": d.get("gid"), "facing": facing, "leaves": n_leaves,
+                        "bottom": bottom, "fixed": fixed, "coords": coords,
+                        "thin_x": thin_x, "sill": mnz})
+        placed += 1
+
+    if mode in ("solid", "air"):
+        return placed, records
+
+    # PASS 2a: carve every passage — ONLY the passage. The old full-bbox carve
+    # also wiped the glazing/framing around wide-framed doors (curtain-wall and
+    # shop-front doors carry metres of side panels in their bbox), leaving
+    # free-standing doors in blown-out holes. The passage is: each leaf column,
+    # through the whole wall depth, door-height tall from the resolved bottom.
+    # All carves happen before any placement so adjacent doorways sharing cells
+    # can't wipe a freshly placed neighbour leaf.
+    for thin_x, facing, bottom, fixed, coords, depth in plans:
+        for wv in coords:
+            for dv in range(depth[0], depth[1] + 1):
+                cx, cy = (dv, wv) if thin_x else (wv, dv)
+                for j in range(door_h):
+                    winner.pop(key(cx, cy, bottom + j), None)
+
+    # PASS 2b: place the leaves and their thresholds.
+    for thin_x, facing, bottom, fixed, coords, depth in plans:
         for wv in coords:
             cx, cy = (fixed, wv) if thin_x else (wv, fixed)
             for j in range(door_h):
                 winner[key(cx, cy, bottom + j)] = (
                     100, door_state(facing, "lower" if j == 0 else "upper", "left"))
-            # Threshold: never leave a door hanging over a hole (the carve above
-            # removes the slab under the leaf). Drop a floor block if the cell
-            # directly below the leaf is empty.
+            # Threshold: never leave a door hanging over a hole. Drop a floor
+            # block if the cell directly below the leaf is empty.
             below = key(cx, cy, bottom - 1)
             if below not in winner:
                 winner[below] = (50, FLOOR_CUBE)
@@ -397,10 +485,11 @@ def place_doors(winner, grid, door_verts, mode):
         rem = k - z * plane
         y = rem // X
         x = rem - y * X
-        if "facing=east" in b:
-            runs_axis[("east", int(x), int(z))].append(int(y))
-        else:
-            runs_axis[("south", int(y), int(z))].append(int(x))
+        fc = b.split("facing=")[1].split(",")[0]
+        if fc in ("east", "west"):     # wall runs along grid-y
+            runs_axis[(fc, int(x), int(z))].append(int(y))
+        else:                          # north/south: wall runs along grid-x
+            runs_axis[(fc, int(y), int(z))].append(int(x))
 
     for (fc, perp, z), wides in runs_axis.items():
         wides.sort()
@@ -413,7 +502,7 @@ def place_doors(winner, grid, door_verts, mode):
             if L >= 2:  # single leaves keep the default hinge
                 for i, w in enumerate(run):
                     hinge = "right" if i < L // 2 else "left"
-                    cx, cy = (perp, w) if fc == "east" else (w, perp)
+                    cx, cy = (perp, w) if fc in ("east", "west") else (w, perp)
                     for j in range(door_h):
                         kk = key(cx, cy, z + j)
                         cur = winner.get(kk)
@@ -421,7 +510,7 @@ def place_doors(winner, grid, door_verts, mode):
                             winner[kk] = (cur[0], set_hinge(cur[1], hinge))
             run = [] if c is None else [c]
 
-    return placed
+    return placed, records
 
 
 def refine_stairs(winner, grid):
@@ -495,6 +584,110 @@ def refine_stairs(winner, grid):
         shape = shape_for(k, x, y, z, facing)
         winner[k] = (winner[k][0], f"{STAIR_SHAPED}[facing={facing},half=bottom,shape={shape}]")
     return converted
+
+
+def synth_spiral_stairs(winner, grid, spirals):
+    """Replace each SPIRAL_STAIR assembly with a synthesized, walkable spiral.
+
+    A voxelized spiral flight at coarse pitch is a jumpy blob pinched between
+    the shaft walls: treads stack in tight columns, so refine_stairs() can't
+    orient them and the climb needs jumping. Instead we rebuild the staircase
+    from its parameters: a centre newel column and one tread per step winding
+    around it on a Chebyshev ring, with the start/end angles and the winding
+    direction measured from the real flight mesh so both ends land where the
+    IFC stair starts and ends. Rises get oriented stair blocks (facing the
+    travel direction), flats get cubes, and headroom above each tread is
+    carved. Returns the number of spiral assemblies synthesized.
+    """
+    all_min, dims = grid["all_min"], grid["dims"]
+    X, plane, pitch = grid["X"], grid["plane"], grid["pitch"]
+    prio = CLASS_PRIORITY.index("stair")
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    def ring_offsets(r):
+        # Chebyshev ring of radius r, as (dx, dy, angle) sorted by angle
+        offs = [(dx, dy) for dx in range(-r, r + 1) for dy in range(-r, r + 1)
+                if max(abs(dx), abs(dy)) == r]
+        return sorted(((dx, dy, np.arctan2(dy, dx)) for dx, dy in offs), key=lambda t: t[2])
+
+    built = 0
+    for verts in spirals.values():
+        V = np.concatenate(verts, axis=0)
+        cx_m, cy_m = (V[:, 0].min() + V[:, 0].max()) / 2, (V[:, 1].min() + V[:, 1].max()) / 2
+        zmin_m, zmax_m = float(V[:, 2].min()), float(V[:, 2].max())
+        h_cells = max(2, round((zmax_m - zmin_m) / pitch))
+        # walk line ~ mid-tread: half the outer radius, and never at the shaft
+        # wall (the bbox edge), so treads don't displace the enclosing walls
+        outer_m = max(V[:, 0].max() - V[:, 0].min(), V[:, 1].max() - V[:, 1].min()) / 2
+        r = max(1, min(3, round(0.55 * outer_m / pitch)))
+
+        # winding + start/end angles: circular mean of vertex angles per z-band,
+        # unwrapped so multi-revolution spirals keep their full sweep
+        nb = max(4, h_cells * 2)
+        bands = np.clip(((V[:, 2] - zmin_m) / max(zmax_m - zmin_m, 1e-9) * nb).astype(int), 0, nb - 1)
+        ang = np.arctan2(V[:, 1] - cy_m, V[:, 0] - cx_m)
+        means = []
+        for b in range(nb):
+            sel = bands == b
+            if sel.sum():
+                means.append(np.arctan2(np.sin(ang[sel]).mean(), np.cos(ang[sel]).mean()))
+        if len(means) < 2:
+            continue
+        means = np.unwrap(np.array(means))
+        theta0, sweep = float(means[0]), float(means[-1] - means[0])
+        if abs(sweep) < 0.5:  # degenerate — not actually winding
+            continue
+
+        ccx = int(round((cx_m - all_min[0]) / pitch))
+        ccy = int(round((cy_m - all_min[1]) / pitch))
+        z0 = int(round((zmin_m - all_min[2]) / pitch))
+
+        ring = ring_offsets(r)
+        # guarantee at least one ring cell per rise: a noisy (under-measured)
+        # sweep would otherwise spread the rises over too few cells and force
+        # 2-block jumps mid-flight. Extends past the measured end angle if the
+        # geometry was too short — walkability beats exact end alignment.
+        min_sweep = (h_cells + 1) * (2 * np.pi / len(ring))
+        if abs(sweep) < min_sweep:
+            sweep = np.sign(sweep) * min_sweep
+        # trace the ring cells the sweep crosses, THEN spread the rises over
+        # them — assigning heights per angular step instead would stack a rise
+        # on an unchanged cell (a vertical jump mid-flight)
+        n = max(h_cells * 2, int(round(abs(sweep) / (2 * np.pi / len(ring)))) * 2)
+        cells_seq = []
+        for i in range(n + 1):
+            th = theta0 + sweep * i / n
+            dx, dy, _ = min(ring, key=lambda t: abs(np.angle(np.exp(1j * (t[2] - th)))))
+            cell = (ccx + dx, ccy + dy)
+            if not cells_seq or cells_seq[-1] != cell:
+                cells_seq.append(cell)
+        m = len(cells_seq)
+        path = [(px, py, z0 + round(j * h_cells / max(m - 1, 1)))
+                for j, (px, py) in enumerate(cells_seq)]
+
+        occupied_path = {(px, py, pz) for px, py, pz in path}
+        for i, (px, py, pz) in enumerate(path):
+            if i and pz > path[i - 1][2]:
+                tx, ty = px - path[i - 1][0], py - path[i - 1][1]
+                if (tx, ty) not in GRID_TO_FACING:   # diagonal move: pick dominant axis
+                    tx, ty = (tx, 0) if abs(tx) >= abs(ty) else (0, ty)
+                facing = GRID_TO_FACING.get((tx, ty), "north")
+                winner[key(px, py, pz)] = (
+                    prio, f"{STAIR_SHAPED}[facing={facing},half=bottom,shape=straight]")
+            else:
+                winner[key(px, py, pz)] = (prio, STAIR_CUBE)
+            # headroom: clear 2 cells above the tread unless another tread is there
+            for j in (1, 2):
+                if (px, py, pz + j) not in occupied_path:
+                    winner.pop(key(px, py, pz + j), None)
+        # newel column
+        for zi in range(z0, z0 + h_cells + 1):
+            if (ccx, ccy, zi) not in occupied_path:
+                winner[key(ccx, ccy, zi)] = (prio, STAIR_CUBE)
+        built += 1
+    return built
 
 
 def refine_fences(winner, grid):
@@ -610,6 +803,13 @@ def main() -> None:
                     help="how to represent IfcDoor (default: functional openable door)")
     ap.add_argument("--stairs", choices=["real", "cube"], default="real",
                     help="'real' = oriented *_stairs blocks (default); 'cube' = stepped stone-brick cubes")
+    ap.add_argument("--spiral", choices=["synth", "voxel"], default="synth",
+                    help="SPIRAL_STAIR handling: 'synth' (default) rebuilds a clean walkable "
+                         "spiral from the stair's parameters; 'voxel' keeps raw voxelization")
+    ap.add_argument("--overrides", type=Path, default=None,
+                    help="JSON overrides, e.g. {\"doors\": {\"<GlobalId>\": "
+                         "{\"skip\": true, \"raise\": 1, \"facing\": \"north\", \"leaves\": 2}}} "
+                         "(GlobalIds are listed in out/<name>/doors.csv)")
     ap.add_argument("--floor-slabs", action="store_true",
                     help="convert thin single-voxel floor plates to bottom slabs (default: full cubes)")
     ap.add_argument("--fill", action="store_true",
@@ -623,22 +823,30 @@ def main() -> None:
         raise SystemExit(f"Input IFC does not exist: {ifc_path}")
     out_dir = args.out_dir.expanduser().resolve()
 
+    overrides = {}
+    if args.overrides:
+        overrides = json.loads(args.overrides.read_text(encoding="utf-8"))
+
     print(f"Opening {ifc_path.name} ...", flush=True)
     model = ifcopenshell.open(str(ifc_path))
     print(f"Extracting geometry with {args.threads} threads ...", flush=True)
-    meshes, door_verts, ex_stats = extract(model, args.threads)
+    meshes, door_verts, spirals, ex_stats = extract(model, args.threads, args.spiral)
     print("Solid faces by class:", ex_stats["solid_faces_by_class"], flush=True)
     print(f"Door elements: {ex_stats['door_elements']}", flush=True)
 
     print(f"Voxelizing at pitch={args.pitch} m ...", flush=True)
     winner, grid, per_class = voxelize_solids(meshes, door_verts, args.pitch, args.fill)
-    placed = place_doors(winner, grid, door_verts, args.doors)
+    placed, door_records = place_doors(winner, grid, door_verts, args.doors,
+                                       overrides.get("doors"))
     print(f"Placed {placed} {args.doors} doors", flush=True)
 
     stairs_converted = slabs_converted = 0
     if args.stairs == "real":
         stairs_converted = refine_stairs(winner, grid)
         print(f"Refined {stairs_converted} stair cubes -> oriented stairs", flush=True)
+    spirals_built = synth_spiral_stairs(winner, grid, spirals) if spirals else 0
+    if spirals_built:
+        print(f"Synthesized {spirals_built} walkable spiral staircase(s)", flush=True)
     if args.floor_slabs:
         slabs_converted = refine_floor_slabs(winner, grid)
         print(f"Refined {slabs_converted} thin floor cubes -> slabs", flush=True)
@@ -646,6 +854,21 @@ def main() -> None:
     print(f"Connected {fences_connected} railing fences", flush=True)
 
     write_stats = unpack_and_write(winner, grid, out_dir)
+
+    # doors.csv: every door's GlobalId + where it landed in schematic coords,
+    # so stubborn doors can be hand-tuned via --overrides.
+    shift = write_stats["origin_shift_xyz"]
+    with (out_dir / "doors.csv").open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["global_id", "x", "y", "z", "facing", "leaves", "sill_offset", "skipped"])
+        for r in door_records:
+            if r.get("skipped"):
+                w.writerow([r["gid"], "", "", "", "", "", "", "yes"])
+                continue
+            wv = r["coords"][0]
+            gx, gy = (r["fixed"], wv) if r["thin_x"] else (wv, r["fixed"])
+            w.writerow([r["gid"], gx - shift[0], r["bottom"] - shift[1], -gy - shift[2],
+                        r["facing"], r["leaves"], r["bottom"] - r["sill"], ""])
 
     summary = {
         "input_ifc": str(ifc_path),
@@ -655,6 +878,7 @@ def main() -> None:
         "doors_placed": placed,
         "stairs_mode": args.stairs,
         "stairs_converted": stairs_converted,
+        "spirals_synthesized": spirals_built,
         "slabs_converted": slabs_converted,
         "fences_connected": fences_connected,
         "world_bounds_min_m": grid["all_min"].tolist(),

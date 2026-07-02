@@ -30,7 +30,10 @@ MAP = {
     "minecraft:gray_concrete": "hardened_clay_stained_gray",
     "minecraft:light_blue_stained_glass": "glass_light_blue",
     "minecraft:iron_bars": "iron_block",                  # railing -> solid metal parapet
+    "minecraft:oak_fence": "planks_oak",                  # railing (cube-only engine: solid wood parapet)
     "minecraft:stone_bricks": "stonebrick",
+    "minecraft:stone_brick_stairs": "stonebrick",         # cube-only: stairs flatten to cubes
+    "minecraft:smooth_stone_slab": "stone",
     "minecraft:deepslate_tiles": "stone_andesite",
     "minecraft:light_gray_concrete": "hardened_clay_stained_silver",
     "minecraft:oak_planks": "planks_oak",                 # only if --doors solid was used

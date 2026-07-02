@@ -70,6 +70,29 @@ for (x, y, z), b in sorted(lowers.items()):
 print(f"lower halves: {len(lowers)}  ok-level: {ok}  sunk: {sunk}  floating: {floating}  no-threshold-below: {no_thresh}")
 for e in bad_examples[:10]: print("   ", e)
 
+# free-standing doors: a door should have wall material beside it along the
+# wall run axis (a lone door on a slab means it was hoisted off its wall or
+# its surroundings were carved away)
+walled2 = walled1 = free = 0
+free_ex = []
+for (x, y, z), b in sorted(lowers.items()):
+    facing = b.split("facing=")[1].split(",")[0]
+    rd = (0, 1) if facing in ("east", "west") else (1, 0)
+    sides = 0
+    for s in (-1, 1):
+        for dy in (0, 1):
+            bb = cells.get((x + rd[0] * s, y + dy, z + rd[1] * s))
+            if bb is not None and "oak_door" not in bb:
+                sides += 1
+                break
+    if sides == 2: walled2 += 1
+    elif sides == 1: walled1 += 1
+    else:
+        free += 1
+        if len(free_ex) < 8: free_ex.append((x, y, z))
+print(f"walled both sides: {walled2}  one side: {walled1}  FREE-STANDING: {free}")
+for e in free_ex: print("   free:", e)
+
 # double door runs
 run_stats = Counter(); unmirrored = 0; stepped = 0
 visited = set()
