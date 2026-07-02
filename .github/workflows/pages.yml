@@ -1,0 +1,78 @@
+name: Deploy renderers to GitHub Pages
+
+# Publishes the walkable browser renderers as one static site:
+#   /            minecraft-web-client (real vanilla block models: doors,
+#                stairs, fences) auto-loading the committed UNBC world
+#                (renderers/mcweb/unbc_world.zip)
+#   /blockcraft  the serverless BlockCraft build (world generated in-browser
+#                from the committed blockcraft/client/public/building.json)
+#
+# Enable Pages first: Settings -> Pages -> Source: GitHub Actions.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, claude/ifc-minecraft-setup-review-t1bggr]  # TEMP: build-verify on the feature branch (deploy still main/dispatch-only)
+    paths:
+      - "blockcraft/**"
+      - "renderers/mcweb/unbc_world.zip"
+      - ".github/workflows/pages.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # --- main page: minecraft-web-client (prebuilt self-host bundle) ---
+      - name: Download minecraft-web-client self-host bundle
+        run: |
+          curl -fL --retry 3 -o self-host.zip \
+            https://github.com/zardoy/minecraft-web-client/releases/latest/download/self-host.zip
+          mkdir mwc && unzip -q self-host.zip -d mwc
+          mkdir site && cp -r mwc/dist/* site/
+      - name: Add the UNBC world and boot straight into it
+        run: |
+          cp renderers/mcweb/unbc_world.zip site/world.zip
+          # No query params -> load the bundled world. Visitors can still pass
+          # their own ?map=/?singleplayer/... which suppresses the redirect.
+          sed -i 's|<head>|<head><script>if(!location.search)location.replace(location.pathname+"?map=world.zip"+location.hash)</script>|' site/index.html
+          grep -q 'map=world.zip' site/index.html
+
+      # --- /blockcraft: serverless BlockCraft ---
+      - name: Build serverless BlockCraft
+        working-directory: blockcraft/client
+        run: |
+          npm ci || npm install
+          OFFLINE_MODE=1 npx webpack --mode=production
+      - name: Assemble site
+        run: |
+          mkdir site/blockcraft && cp -r blockcraft/client/dist/* site/blockcraft/
+          ls site site/blockcraft | head -30
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
