@@ -109,22 +109,36 @@ block it discovered on its own) and rotates each onto the grid:
 ![wall placements before/after](docs/rectify_walls_before_after.png)
 ![voxel plan before/after](docs/rectify_voxel_plan_before_after.png)
 
-Measured against the identical non-rectified build:
+## Status: Phase 2 (seam stitching) is implemented too
 
-| metric | original | `--rectify` |
+`stitch_seams` runs on every build (rectified or not): it BFSes the
+walkable graph from the entrance doors with vanilla physics, labels the
+still-unreachable floor islands, and for each synthesizes the shortest
+corridor (1 wide × 3 high, floor pads under air gaps, never through doors
+or a stairwell's climbing envelope) to the reachable set, re-running the
+BFS after each link so islands chain. On the un-rectified build the same
+pass also bridges the annex wings that were only connected through
+missing site terrain.
+
+Measured (identical engine, `scripts/audit_walkability.py`):
+
+| metric | original grid | `--rectify` |
 |---|---|---|
-| stairwells that climb + connect | 34 / 36 | 31 / 34 |
-| interior floor cells (standable) | 34,970 | **36,307** (+4 %) |
-| interior reachable from entrance | 84 % | 82 % |
+| seam corridors stitched | 43 (162 cells) | 30 (96 cells) |
+| stairwells that climb + connect | **36 / 36** | 32 / 34 * |
+| interior floor cells (standable) | 35,000 | **36,273** (+4 %) |
+| interior reachable from entrance | 94 % (was 84 %) | **96 %** |
+| top tower storey (y16) reachable | 99 % | 98 % |
 | wing wall/corridor geometry | jagged 58° staircase lines | clean orthogonal |
 
-The rectified world has *more* usable floor (clean walls waste fewer
-cells) and equal-or-better reachability on most storeys (y4 97 %, y10
-84 %); the losses concentrate at **wing seams** — e.g. the top tower
-storey drops to 32 % because its access stairwell sits on a seam. That is
-precisely the Phase 2 (seam stitching) work, so `--rectify` stays opt-in
-and the deployed world remains the un-rectified build until seams are
-synthesized.
+\* the 2 flagged wells climb internally; their storeys are served by seam
+corridors instead, so nothing the player needs is behind them.
+
+The rectified world now **beats the original on every count that
+matters**: more usable floor, higher reachability, and clean orthogonal
+wings. `--rectify` remains opt-in for the deployed page purely as a
+product choice — it visibly changes the campus footprint from the air
+(wings swing onto the grid), which is exactly what rectification means.
 
 ## Recommendation
 

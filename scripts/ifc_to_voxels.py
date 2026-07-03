@@ -1483,6 +1483,186 @@ def connect_hidden_rooms(winner, grid):
     return connected, hidden_found, len(hidden), carved
 
 
+def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
+    """Phase-2 rectification: reconnect walkable islands with short corridors.
+
+    After per-wing rotation (--rectify) the joints between a rotated wing
+    and the main building shear: a corridor stub on the spine side points at
+    where the wing corridor USED to be, leaving a wall plug or an air gap of
+    a few cells. The same shape of defect exists un-rectified where the
+    model has no site terrain (annex wings whose only real-world link is
+    outside ground). This pass fixes both the same way the stair rebuild
+    fixes stairwells - synthesize the missing piece:
+
+      1. BFS the walkable graph (vanilla physics: 8-dir, +1 up only onto an
+         oriented stair or with jump clearance, drops to -3) from the
+         ground-level entrance doors.
+      2. Component-label the unreachable standable cells; keep components
+         of >= min_component cells (real floors, not ledges).
+      3. For each island (largest first), find the closest (reachable,
+         island) cell pair with |dz| <= 1 within max_span in plan, whose
+         straight line crosses only carveable mass (wall/floor/glass/... -
+         never doors, stairs or another island's fresh corridor).
+      4. Carve the corridor 1 wide x 3 high at the reachable side's level,
+         lay FLOOR_CUBE under gaps (an air gap becomes a walkway pad), and
+         re-run the BFS so later islands can attach through it.
+
+    Returns (corridors_built, cells_touched).
+    """
+    X, plane = grid["X"], grid["plane"]
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    def unkey(k):
+        z = k // plane
+        rem = k - z * plane
+        return rem - (rem // X) * X, rem // X, z
+
+    stair_base = STAIR_SHAPED.split("[")[0]
+    carveable = {CLASS_BLOCKS[c] for c in
+                 ("wall", "floor", "structure", "roof", "frame", "glass", "other")}
+
+    def block(x, y, z):
+        w = winner.get(key(x, y, z))
+        return None if w is None else w[1]
+
+    def passable(x, y, z):
+        b = block(x, y, z)
+        return b is None or "_door" in b
+
+    def standable(x, y, z):
+        b = block(x, y, z - 1)
+        return (b is not None and "_door" not in b
+                and passable(x, y, z) and passable(x, y, z + 1))
+
+    DIRS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx, dy) != (0, 0)]
+
+    def neighbors(x, y, z):
+        for dx, dy in DIRS:
+            for dz in (0, 1, -1, -2, -3):
+                nx, ny, nz = x + dx, y + dy, z + dz
+                if standable(nx, ny, nz):
+                    if dz == 1:
+                        below = block(nx, ny, nz - 1)
+                        walk = below is not None and below.split("[")[0] == stair_base
+                        if not walk and not passable(x, y, z + 2):
+                            continue
+                    yield nx, ny, nz
+                    break
+
+    def seeds():
+        out = []
+        for k, (_, b) in winner.items():
+            if "_door" in b and "half=lower" in b:
+                x, y, z = unkey(k)
+                if z > 4:
+                    continue
+                for dx, dy in DIRS:
+                    if standable(x + dx, y + dy, z):
+                        out.append((x + dx, y + dy, z))
+        return out
+
+    def bfs(starts):
+        seen = set(starts)
+        queue = list(starts)
+        while queue:
+            x, y, z = queue.pop()
+            for n in neighbors(x, y, z):
+                if n not in seen:
+                    seen.add(n)
+                    queue.append(n)
+        return seen
+
+    built = touched = 0
+    for _ in range(max_links):
+        reach = bfs(seeds())
+        if not reach:
+            break
+        unreached = set()
+        for k in list(winner.keys()):
+            x, y, z = unkey(k)
+            if (x, y, z + 1) not in reach and standable(x, y, z + 1):
+                unreached.add((x, y, z + 1))
+        islands = []
+        left = set(unreached)
+        while left:
+            s = left.pop()
+            comp = [s]
+            queue = [s]
+            while queue:
+                c = queue.pop()
+                for n in neighbors(*c):
+                    if n in left:
+                        left.discard(n)
+                        comp.append(n)
+                        queue.append(n)
+            if len(comp) >= min_component:
+                islands.append(comp)
+        if not islands:
+            break
+        islands.sort(key=len, reverse=True)
+
+        linked = False
+        for comp in islands:
+            best = None
+            comp_set = set(comp)
+            for (x, y, z) in comp:
+                for dx in range(-max_span, max_span + 1):
+                    for dy in range(-max_span, max_span + 1):
+                        d = abs(dx) + abs(dy)
+                        if d < 2 or (best and d >= best[0]):
+                            continue
+                        for dz in (0, 1, -1):
+                            cand = (x + dx, y + dy, z + dz)
+                            if cand in reach:
+                                best = (d, (x, y, z), cand)
+            if best is None:
+                continue
+            _, (ix, iy, iz), (rx, ry, rz) = best
+            n_steps = max(abs(ix - rx), abs(iy - ry))
+            path = []
+            ok = True
+            stair_family = (STAIR_CUBE, stair_base)
+            for i in range(1, n_steps):
+                px = rx + round((ix - rx) * i / n_steps)
+                py = ry + round((iy - ry) * i / n_steps)
+                if (px, py, rz) in comp_set or (px, py, rz) in reach:
+                    continue
+                for h in (0, 1, 2):
+                    b = block(px, py, rz + h)
+                    if b is not None and ("_door" in b or b.split("[")[0] not in carveable):
+                        ok = False
+                        break
+                    # never carve a stairwell's headroom or a landing over a
+                    # flight: a cell within 3 above a stair block is part of
+                    # its climbing envelope (this broke 3 wells before)
+                    if any((bb := block(px, py, rz + h - j)) is not None
+                           and bb.split("[")[0] in stair_family
+                           for j in (1, 2, 3)):
+                        ok = False
+                        break
+                if not ok:
+                    break
+                path.append((px, py))
+            if not ok:
+                continue
+            prio = CLASS_PRIORITY.index("floor")
+            for (px, py) in path:
+                for h in (0, 1, 2):
+                    if winner.pop(key(px, py, rz + h), None) is not None:
+                        touched += 1
+                if winner.get(key(px, py, rz - 1)) is None:
+                    winner[key(px, py, rz - 1)] = (prio, FLOOR_CUBE)
+                    touched += 1
+            built += 1
+            linked = True
+            break   # re-BFS so the next island can ride this corridor
+        if not linked:
+            break
+    return built, touched
+
+
 def refine_floor_slabs(winner, grid):
     """Convert thin, single-voxel `floor`-class plates to bottom slabs.
 
@@ -1617,6 +1797,8 @@ def main() -> None:
     rooms_connected, rooms_hidden, rooms_left, _ = connect_hidden_rooms(winner, grid)
     print(f"Hidden door-less rooms: {rooms_hidden}; connected {rooms_connected} "
           f"through their hallway door, {rooms_left} remain sealed", flush=True)
+    seams_built, seam_cells = stitch_seams(winner, grid)
+    print(f"Stitched {seams_built} seam corridors ({seam_cells} cells)", flush=True)
     if args.floor_slabs:
         slabs_converted = refine_floor_slabs(winner, grid)
         print(f"Refined {slabs_converted} thin floor cubes -> slabs", flush=True)
@@ -1654,6 +1836,7 @@ def main() -> None:
         "hidden_rooms_found": rooms_hidden,
         "hidden_rooms_connected": rooms_connected,
         "hidden_rooms_left": rooms_left,
+        "seam_corridors": seams_built,
         "slabs_converted": slabs_converted,
         "fences_connected": fences_connected,
         "world_bounds_min_m": grid["all_min"].tolist(),
