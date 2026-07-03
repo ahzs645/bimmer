@@ -933,6 +933,8 @@ def rebuild_blocked_stairs(winner, grid, stair_groups):
                             out.add((x, y, z + 1))
             return out
 
+        stair_shaped_base = STAIR_SHAPED.split("[")[0]
+
         def climbs(stand):
             starts = {p for p in stand if p[2] <= z0 + 1}
             goal_z = z1
@@ -948,9 +950,20 @@ def rebuild_blocked_stairs(winner, grid, stair_groups):
                             continue
                         for dz in (0, 1, -1, -2):
                             q = (x + dx, y + dy, z + dz)
-                            if q in stand and q not in seenl:
-                                seenl.add(q)
-                                frontier.append(q)
+                            if q not in stand or q in seenl:
+                                continue
+                            if dz == 1:
+                                # stepping onto an oriented stair block is a
+                                # walk (2-air suffices); stepping onto a full
+                                # cube is a JUMP and needs clearance above the
+                                # head at the source, or vanilla physics blocks
+                                # it (this let the terraced lobby stair pass
+                                # while being unclimbable in game)
+                                if (block_at(q[0], q[1], q[2] - 1) != stair_shaped_base
+                                        and winner.get(key(x, y, z + 2)) is not None):
+                                    continue
+                            seenl.add(q)
+                            frontier.append(q)
             return False
 
         if climbs(stand_cells()):
@@ -1031,9 +1044,18 @@ def rebuild_blocked_stairs(winner, grid, stair_groups):
                 pos += forward
             z += 1
 
-        # headroom above every tread; support cube under floating treads
+        # headroom above every tread; support cube under floating treads.
+        # Walls/structure/mullions clear too: the synthesized run often
+        # pierces a rounded wall line inside the shaft, and a concrete cell
+        # hovering 1-2 above a tread makes the whole flight unclimbable
+        # (same "the walking path is the point" rule as CLASS_PRIORITY —
+        # this was exactly why rebuilt fire-escape wells still failed).
+        # Glass stays: puncturing shaft glazing reads worse than a jump.
         placed_set = set(placed_cells)
-        head_clearable = clearable | {fence_block}
+        head_clearable = clearable | {fence_block, CLASS_BLOCKS["wall"],
+                                      CLASS_BLOCKS["structure"],
+                                      CLASS_BLOCKS["frame"],
+                                      CLASS_BLOCKS["other"]}
         for (cx, cy, z) in placed_cells:
             for j in (1, 2, 3):
                 if (cx, cy, z + j) in placed_set or (cx, cy, z + j) in protected:
@@ -1050,6 +1072,11 @@ def rebuild_blocked_stairs(winner, grid, stair_groups):
                 protected.add((cx, cy, z - 1))
         protected.update(placed_set)
         rebuilt += 1
+        # verify the rebuilt well actually climbs now — a silent failure
+        # here is how broken fire escapes shipped the first time
+        if not climbs(stand_cells()):
+            print(f"  WARNING: rebuilt stairwell x[{x0},{x1}] y[{y0},{y1}] "
+                  f"z[{z0},{z1}] still fails its climb test", flush=True)
     return rebuilt
 
 

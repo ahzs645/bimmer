@@ -39,6 +39,8 @@ table, functional doors, per-stage reference, and Minecraft import instructions.
 | **[BLOCKCRAFT.md](BLOCKCRAFT.md)** | walk the building in a browser (BlockCraft, flat world) |
 | **[RENDERERS.md](RENDERERS.md)** | the two walkable browser renderers compared (BlockCraft vs minecraft-web-client) |
 | **[LESSONS.md](LESSONS.md)** | failure catalog (doors/stairs/railings): symptom → root cause → fix, the verification workflow, player behaviour, open items |
+| **[ASSUMPTIONS.md](ASSUMPTIONS.md)** | every assumption the conversion makes (floor/wall thickness, door preconditions, stair physics) and the artifact you get when one is violated |
+| **[RECTIFY.md](RECTIFY.md)** | plan-rectification proposal: conform angled wings to the voxel grid, then replay doors/windows parametrically |
 | **[PRIOR_ART.md](PRIOR_ART.md)** | researched survey of existing IFC/BIM→Minecraft work |
 | `TESTED_OPTIONS.md` | log of tools evaluated while building this |
 
