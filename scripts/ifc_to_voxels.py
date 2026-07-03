@@ -125,7 +125,126 @@ def class_for(ifc_type: str) -> str:
     return SEMANTIC_CLASSES.get(ifc_type, "other")
 
 
-def extract(model, threads: int, spiral_mode: str = "synth"):
+def compute_wing_transforms(model, min_family=250, eps=9.0, min_wing=60):
+    """Phase-1 plan rectification: find off-grid WINGS and how to square them.
+
+    Buildings like UNBC are several orthogonal grids in one model: 65 % of
+    walls are axis-aligned but whole wings sit at e.g. 58° and voxelize as
+    jagged staircase lines. Each such wing is orthogonal *in its own frame*,
+    so the fix is a rigid rotation per wing, not per wall (see RECTIFY.md).
+
+    From the IFC wall placements (cheap - no geometry):
+      1. histogram wall plan-angles mod 90°; every off-axis angle family
+         with >= min_family walls is a rectification candidate;
+      2. cluster that family's walls spatially (union-find, eps metres) -
+         each cluster is one WING;
+      3. pivot = the wing wall nearest any axis-aligned wall (the seam with
+         the campus spine stays put while the far end swings);
+      4. of the two grid-aligning rotations (-a and 90-a) keep the one that
+         lands the fewest wing walls within 2 m of existing axis-aligned
+         walls (least overlap), ties to the smaller swing.
+
+    Returns wings as [{"eqs": hull half-planes, "pivot", "cos", "sin"}] in
+    world metres; None-safe consumer is extract().
+    """
+    import math
+    from ifcopenshell.util import placement as _placement
+    from scipy.spatial import ConvexHull
+
+    scale = ifcopenshell.util.unit.calculate_unit_scale(model)
+    pts, angs = [], []
+    for w in model.by_type("IfcWall") + model.by_type("IfcWallStandardCase"):
+        try:
+            M = _placement.get_local_placement(w.ObjectPlacement)
+        except Exception:
+            continue
+        pts.append((float(M[0][3]) * scale, float(M[1][3]) * scale))
+        angs.append(math.degrees(math.atan2(M[1][0], M[0][0])) % 90.0)
+    P = np.asarray(pts)
+    A = np.asarray(angs)
+    on_axis = (A < 3) | (A > 87)
+    main = P[on_axis][::3]
+
+    families = []
+    off = ~on_axis
+    binned = np.round(A[off]).astype(int) % 90
+    for b, n in Counter(binned.tolist()).most_common():
+        if n < min_family or any(abs(b - fb) <= 4 for fb in families):
+            continue
+        families.append(b)
+
+    def cluster(Q):
+        n = len(Q)
+        parent = list(range(n))
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        cells = defaultdict(list)
+        for i, (x, y) in enumerate(Q):
+            cells[(int(x // eps), int(y // eps))].append(i)
+        for (cx, cy), idx in cells.items():
+            neigh = [j for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                     for j in cells.get((cx + dx, cy + dy), [])]
+            for i in idx:
+                for j in neigh:
+                    if j > i and np.hypot(*(Q[i] - Q[j])) <= eps:
+                        ri, rj = find(i), find(j)
+                        if ri != rj:
+                            parent[ri] = rj
+        roots = defaultdict(list)
+        for i in range(n):
+            roots[find(i)].append(i)
+        return [Q[idx] for idx in roots.values() if len(idx) >= min_wing]
+
+    def rotated(Q, pivot, deg):
+        t = math.radians(deg)
+        R = np.array([[math.cos(t), -math.sin(t)], [math.sin(t), math.cos(t)]])
+        return (Q - pivot) @ R.T + pivot
+
+    def overlap(Q):
+        d2 = ((Q[:, None, :] - main[None, :, :]) ** 2).sum(2).min(axis=1)
+        return int((d2 < 4.0).sum())
+
+    wings = []
+    for fam in families:
+        fam_pts = P[off][np.abs(((binned - fam) + 45) % 90 - 45) <= 4]
+        for W in cluster(fam_pts):
+            d2 = ((W[:, None, :] - main[None, :, :]) ** 2).sum(2)
+            i, j = np.unravel_index(np.argmin(d2), d2.shape)
+            pivot = (W[i] + main[j]) / 2.0
+            cands = sorted((-float(fam), 90.0 - float(fam)), key=abs)
+            deg = min(cands, key=lambda d: (overlap(rotated(W, pivot, d)), abs(d)))
+            hull = ConvexHull(W)
+            wings.append({"eqs": hull.equations.copy(), "pivot": pivot,
+                          "deg": deg, "n": len(W),
+                          "cos": math.cos(math.radians(deg)),
+                          "sin": math.sin(math.radians(deg))})
+    return wings
+
+
+def wing_for_point(wings, x, y, margin=2.5):
+    for w in wings:
+        if all(e[0] * x + e[1] * y + e[2] <= margin for e in w["eqs"]):
+            return w
+    return None
+
+
+def apply_wing(w, v):
+    """Rigidly rotate verts (N,3) about the wing pivot in the plan plane."""
+    px, py = w["pivot"]
+    c, s = w["cos"], w["sin"]
+    out = v.copy()
+    dx, dy = v[:, 0] - px, v[:, 1] - py
+    out[:, 0] = px + c * dx - s * dy
+    out[:, 1] = py + s * dx + c * dy
+    return out
+
+
+def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
     """Iterate geometry once.
 
     Returns (solid meshes by class, door meshes, spiral assemblies, stats).
@@ -160,6 +279,7 @@ def extract(model, threads: int, spiral_mode: str = "synth"):
     spirals: dict[int, list[np.ndarray]] = defaultdict(list)  # assembly id -> vert arrays
     stair_groups: dict[int, list[np.ndarray]] = defaultdict(list)  # stair assembly id -> vert arrays
     unit_scale = ifcopenshell.util.unit.calculate_unit_scale(model)  # file unit -> metres
+    wing_cache: dict[int, dict | None] = {}
     type_counts: Counter = Counter()
     excluded_counts: Counter = Counter()
     processed = 0
@@ -171,6 +291,20 @@ def extract(model, threads: int, spiral_mode: str = "synth"):
         geom = shape.geometry
         v = np.asarray(geom.verts, dtype=np.float64).reshape((-1, 3))
         f = np.asarray(geom.faces, dtype=np.int64).reshape((-1, 3))
+
+        if wings and len(v):
+            # rectification: rotate every element of an off-grid wing into
+            # the wing's own (orthogonal) frame. Assignment is cached per
+            # AGGREGATE root so a stair and all its flights/stringers/
+            # railings rotate together even if a member's own centroid
+            # falls just outside the wing hull.
+            dec = getattr(element, "Decomposes", None)
+            root = dec[0].RelatingObject.id() if dec else shape.id
+            if root not in wing_cache:
+                cx, cy = v[:, 0].mean(), v[:, 1].mean()
+                wing_cache[root] = wing_for_point(wings, cx, cy)
+            if wing_cache[root] is not None:
+                v = apply_wing(wing_cache[root], v)
 
         if ifc_type in EXCLUDE_TYPES:
             excluded_counts[ifc_type] += 1
@@ -1424,6 +1558,12 @@ def main() -> None:
                     help="JSON overrides, e.g. {\"doors\": {\"<GlobalId>\": "
                          "{\"skip\": true, \"raise\": 1, \"facing\": \"north\", \"leaves\": 2}}} "
                          "(GlobalIds are listed in out/<name>/doors.csv)")
+    ap.add_argument("--rectify", action="store_true",
+                    help="Phase-1 plan rectification: rotate off-grid wings "
+                         "(whole rigid sections at e.g. 58 deg) onto the world "
+                         "grid about their seam with the main building, so "
+                         "their walls/corridors voxelize clean instead of "
+                         "jagged (see RECTIFY.md)")
     ap.add_argument("--floor-slabs", action="store_true",
                     help="convert thin single-voxel floor plates to bottom slabs (default: full cubes)")
     ap.add_argument("--fill", action="store_true",
@@ -1444,7 +1584,14 @@ def main() -> None:
     print(f"Opening {ifc_path.name} ...", flush=True)
     model = ifcopenshell.open(str(ifc_path))
     print(f"Extracting geometry with {args.threads} threads ...", flush=True)
-    meshes, door_verts, spirals, stair_groups, ex_stats = extract(model, args.threads, args.spiral)
+    wings = None
+    if args.rectify:
+        wings = compute_wing_transforms(model)
+        for w in wings:
+            print(f"Rectify: wing of {w['n']} walls rotates {w['deg']:+.0f} deg "
+                  f"about seam ({w['pivot'][0]:.0f}, {w['pivot'][1]:.0f}) m", flush=True)
+    meshes, door_verts, spirals, stair_groups, ex_stats = extract(
+        model, args.threads, args.spiral, wings=wings)
     print("Solid faces by class:", ex_stats["solid_faces_by_class"], flush=True)
     print(f"Door elements: {ex_stats['door_elements']}", flush=True)
 

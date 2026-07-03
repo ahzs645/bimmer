@@ -94,9 +94,42 @@ plus the per-door two-sided walkability probe. Rectification that breaks a
 door slides it along its wall to the nearest valid column (GDMC-style
 validity rule) rather than deleting it.
 
+## Status: Phase 1 is implemented (`--rectify`)
+
+`scripts/ifc_to_voxels.py --rectify` runs the whole recipe above at extract
+time: wall placements → angle families → spatial wing clustering →
+seam-nearest pivot → collision-scored rotation choice → rigid per-wing
+rotation of every element (cached per aggregate root, so a stair and its
+flights/railings rotate together, and doors ride their walls — the
+"openings replay" is implicit in the rigid transform for Phase 1).
+
+On UNBC it finds **six wings** (the five 58° clusters *and* a 5°-skewed
+block it discovered on its own) and rotates each onto the grid:
+
+![wall placements before/after](docs/rectify_walls_before_after.png)
+![voxel plan before/after](docs/rectify_voxel_plan_before_after.png)
+
+Measured against the identical non-rectified build:
+
+| metric | original | `--rectify` |
+|---|---|---|
+| stairwells that climb + connect | 34 / 36 | 31 / 34 |
+| interior floor cells (standable) | 34,970 | **36,307** (+4 %) |
+| interior reachable from entrance | 84 % | 82 % |
+| wing wall/corridor geometry | jagged 58° staircase lines | clean orthogonal |
+
+The rectified world has *more* usable floor (clean walls waste fewer
+cells) and equal-or-better reachability on most storeys (y4 97 %, y10
+84 %); the losses concentrate at **wing seams** — e.g. the top tower
+storey drops to 32 % because its access stairwell sits on a seam. That is
+precisely the Phase 2 (seam stitching) work, so `--rectify` stays opt-in
+and the deployed world remains the un-rectified build until seams are
+synthesized.
+
 ## Recommendation
 
-1. Do **Phase 1 + openings replay** next: it is a contained change (one
+1. ~~Do **Phase 1 + openings replay** next~~ — **done**, see Status above.
+   It was a contained change (one
    rotation per wing + parametric door records), it fixes the 58° wing —
    a quarter of the building — and it reuses every existing pass untouched
    (each wing is just a normal orthogonal building in its own frame).
