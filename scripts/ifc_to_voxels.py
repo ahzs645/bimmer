@@ -1050,11 +1050,16 @@ def rebuild_blocked_stairs(winner, grid, stair_groups):
         # hovering 1-2 above a tread makes the whole flight unclimbable
         # (same "the walking path is the point" rule as CLASS_PRIORITY —
         # this was exactly why rebuilt fire-escape wells still failed).
-        # Glass stays: puncturing shaft glazing reads worse than a jump.
+        # Glass clears too: in the glazed fire-escape towers the shaft
+        # glazing rounds inward directly over the run, and a pane 1-2 cells
+        # above a tread blocks the climb exactly like concrete. Only cells
+        # straight above placed treads are affected, so the puncture is a
+        # couple of interior panes, not the facade.
         placed_set = set(placed_cells)
         head_clearable = clearable | {fence_block, CLASS_BLOCKS["wall"],
                                       CLASS_BLOCKS["structure"],
                                       CLASS_BLOCKS["frame"],
+                                      CLASS_BLOCKS["glass"],
                                       CLASS_BLOCKS["other"]}
         for (cx, cy, z) in placed_cells:
             for j in (1, 2, 3):
