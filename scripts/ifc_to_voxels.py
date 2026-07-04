@@ -1575,6 +1575,7 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
         return seen
 
     built = touched = 0
+    log: list[dict] = []
     for _ in range(max_links):
         reach = bfs(seeds())
         if not reach:
@@ -1648,19 +1649,27 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
             if not ok:
                 continue
             prio = CLASS_PRIORITY.index("floor")
+            carved_kinds: Counter = Counter()
+            pads = 0
             for (px, py) in path:
                 for h in (0, 1, 2):
-                    if winner.pop(key(px, py, rz + h), None) is not None:
+                    popped = winner.pop(key(px, py, rz + h), None)
+                    if popped is not None:
+                        carved_kinds[popped[1].split("[")[0].replace("minecraft:", "")] += 1
                         touched += 1
                 if winner.get(key(px, py, rz - 1)) is None:
                     winner[key(px, py, rz - 1)] = (prio, FLOOR_CUBE)
+                    pads += 1
                     touched += 1
+            log.append({"from_xyz": (rx, ry, rz), "to_xyz": (ix, iy, iz),
+                        "len": len(path), "island_cells": len(comp),
+                        "floor_pads": pads, "carved": dict(carved_kinds)})
             built += 1
             linked = True
             break   # re-BFS so the next island can ride this corridor
         if not linked:
             break
-    return built, touched
+    return built, touched, log
 
 
 def refine_floor_slabs(winner, grid):
@@ -1797,7 +1806,7 @@ def main() -> None:
     rooms_connected, rooms_hidden, rooms_left, _ = connect_hidden_rooms(winner, grid)
     print(f"Hidden door-less rooms: {rooms_hidden}; connected {rooms_connected} "
           f"through their hallway door, {rooms_left} remain sealed", flush=True)
-    seams_built, seam_cells = stitch_seams(winner, grid)
+    seams_built, seam_cells, seam_log = stitch_seams(winner, grid)
     print(f"Stitched {seams_built} seam corridors ({seam_cells} cells)", flush=True)
     if args.floor_slabs:
         slabs_converted = refine_floor_slabs(winner, grid)
@@ -1821,6 +1830,19 @@ def main() -> None:
             gx, gy = (r["fixed"], wv) if r["thin_x"] else (wv, r["fixed"])
             w.writerow([r["gid"], gx - shift[0], r["bottom"] - shift[1], -gy - shift[2],
                         r["facing"], r["leaves"], r["bottom"] - r["sill"], ""])
+
+    # seams.csv: every synthesized connector corridor in world (blocks.csv)
+    # coordinates, so each one can be audited / visited in the client.
+    with (out_dir / "seams.csv").open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["from_x", "from_y", "from_z", "to_x", "to_y", "to_z",
+                    "length", "island_cells", "floor_pads", "carved"])
+        for s in seam_log:
+            (fx, fy, fz), (tx, ty, tz) = s["from_xyz"], s["to_xyz"]
+            w.writerow([fx - shift[0], fz - shift[1], -fy - shift[2],
+                        tx - shift[0], tz - shift[1], -ty - shift[2],
+                        s["len"], s["island_cells"], s["floor_pads"],
+                        json.dumps(s["carved"])])
 
     summary = {
         "input_ifc": str(ifc_path),

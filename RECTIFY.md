@@ -140,6 +140,28 @@ wings. `--rectify` remains opt-in for the deployed page purely as a
 product choice — it visibly changes the campus footprint from the air
 (wings swing onto the grid), which is exactly what rectification means.
 
+### Seam audit trail
+
+Every synthesized corridor is logged to **`out/<name>/seams.csv`**
+(reachable-side and island-side coordinates in world/blocks.csv space,
+length, size of the island it reconnects, floor pads laid, and a
+histogram of exactly which blocks were carved). Audited on this model
+(all 74 corridors across both builds walked end-to-end by BFS, plus an
+in-client sweep):
+
+- **Most corridors are length 1** — a single doorway-sized opening
+  through one wall thickness, reconnecting rooms of hundreds to
+  thousands of cells that were sealed by one rounded partition.
+- Total carve across the whole campus is tiny: 145 cells (original) /
+  83 cells (rectified), overwhelmingly `white_concrete` interior wall.
+- The only cosmetically notable seams are two 6–9-cell catwalk bridges
+  per build (with floor pads, passing through tinted glazing) around
+  x≈119–129, y13, z≈351–358 — functional and inconspicuous in-game, but
+  pin-able via seams.csv coordinates if a nicer hand-built link is ever
+  wanted.
+- Nothing carved a door, a stair, or a stairwell's climbing envelope
+  (enforced by the pass; confirmed by the audit).
+
 ## Recommendation
 
 1. ~~Do **Phase 1 + openings replay** next~~ — **done**, see Status above.
