@@ -146,21 +146,28 @@ Every synthesized corridor is logged to **`out/<name>/seams.csv`**
 (reachable-side and island-side coordinates in world/blocks.csv space,
 length, size of the island it reconnects, floor pads laid, and a
 histogram of exactly which blocks were carved). Audited on this model
-(all 74 corridors across both builds walked end-to-end by BFS, plus an
-in-client sweep):
+(every corridor walked end-to-end by BFS, plus an in-client sweep), and
+the pass was upgraded from what the first audit found:
 
 - **Most corridors are length 1** — a single doorway-sized opening
   through one wall thickness, reconnecting rooms of hundreds to
   thousands of cells that were sealed by one rounded partition.
-- Total carve across the whole campus is tiny: 145 cells (original) /
-  83 cells (rectified), overwhelmingly `white_concrete` interior wall.
-- The only cosmetically notable seams are two 6–9-cell catwalk bridges
-  per build (with floor pads, passing through tinted glazing) around
-  x≈119–129, y13, z≈351–358 — functional and inconspicuous in-game, but
-  pin-able via seams.csv coordinates if a nicer hand-built link is ever
-  wanted.
-- Nothing carved a door, a stair, or a stairwell's climbing envelope
-  (enforced by the pass; confirmed by the audit).
+- **Corridors route around glazing.** The line chooser scores every
+  near-minimal candidate pair and takes the cheapest *feasible* line,
+  with glass cells costing 8× a wall cell — after which **zero glass
+  cells are cut in either build** (previously 5–7). If a corridor ever
+  must pierce a curtain wall, the opening is framed with mullion-grey
+  concrete (sides + lintel) so it reads as an intentional portal.
+- **Open-air links are proper catwalks**: floor pads get side decks and
+  fence guardrails (arm states computed by the normal railing pass),
+  not a bare floating stone strip.
+- Nothing carves a door, a stair, or a stairwell's climbing envelope
+  (enforced by the pass; confirmed by the audit), and a candidate line
+  with nothing to carve is rejected — an open-but-unreachable gap is a
+  headroom problem this pass cannot fix, and accepting it would no-op
+  forever.
+- Current totals: 40 corridors / 234 cells touched (original build),
+  42 / 173 (rectified); reachability 94 % / 96 %, all door QA green.
 
 ## Recommendation
 

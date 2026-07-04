@@ -1605,64 +1605,135 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
         islands.sort(key=len, reverse=True)
 
         linked = False
-        for comp in islands:
-            best = None
-            comp_set = set(comp)
-            for (x, y, z) in comp:
-                for dx in range(-max_span, max_span + 1):
-                    for dy in range(-max_span, max_span + 1):
-                        d = abs(dx) + abs(dy)
-                        if d < 2 or (best and d >= best[0]):
-                            continue
-                        for dz in (0, 1, -1):
-                            cand = (x + dx, y + dy, z + dz)
-                            if cand in reach:
-                                best = (d, (x, y, z), cand)
-            if best is None:
-                continue
-            _, (ix, iy, iz), (rx, ry, rz) = best
+        glass_block = CLASS_BLOCKS["glass"]
+        frame_block = CLASS_BLOCKS["frame"]
+        frame_prio = CLASS_PRIORITY.index("frame")
+        rail_block = CLASS_BLOCKS["railing"]
+        rail_prio = CLASS_PRIORITY.index("railing")
+        stair_family = (STAIR_CUBE, stair_base)
+
+        def line_of(f, t):
+            """Feasible corridor from reachable f to island t, or None.
+
+            Returns (cells, cost): cells to carve with per-cell info; cost
+            penalizes crossing glazing heavily (an interior wall hole is
+            invisible, a curtain-wall hole is not) and open-air pads lightly.
+            """
+            (rx, ry, rz), (ix, iy, _) = f, t
             n_steps = max(abs(ix - rx), abs(iy - ry))
-            path = []
-            ok = True
-            stair_family = (STAIR_CUBE, stair_base)
+            cells = []
+            cost = 0
             for i in range(1, n_steps):
                 px = rx + round((ix - rx) * i / n_steps)
                 py = ry + round((iy - ry) * i / n_steps)
                 if (px, py, rz) in comp_set or (px, py, rz) in reach:
                     continue
+                col_glass = False
                 for h in (0, 1, 2):
                     b = block(px, py, rz + h)
-                    if b is not None and ("_door" in b or b.split("[")[0] not in carveable):
-                        ok = False
-                        break
+                    if b is not None:
+                        base = b.split("[")[0]
+                        if "_door" in b or base not in carveable:
+                            return None
+                        if base == glass_block:
+                            col_glass = True
                     # never carve a stairwell's headroom or a landing over a
                     # flight: a cell within 3 above a stair block is part of
                     # its climbing envelope (this broke 3 wells before)
                     if any((bb := block(px, py, rz + h - j)) is not None
                            and bb.split("[")[0] in stair_family
                            for j in (1, 2, 3)):
-                        ok = False
-                        break
-                if not ok:
-                    break
-                path.append((px, py))
-            if not ok:
+                        return None
+                needs_pad = winner.get(key(px, py, rz - 1)) is None
+                cells.append((px, py, col_glass, needs_pad))
+                cost += 1 + (8 if col_glass else 0) + (1 if needs_pad else 0)
+            if not cells:
+                # nothing to carve means the gap isn't a solid plug (it's a
+                # headroom/level blocker this pass can't fix) - picking such
+                # a "free" line would no-op forever
+                return None
+            return cells, cost
+
+        for comp in islands:
+            comp_set = set(comp)
+            # collect near-minimal candidate pairs, then take the cheapest
+            # FEASIBLE line - the shortest is not best when it punches
+            # through a curtain wall and a slightly longer one goes through
+            # plain interior wall
+            best_d = None
+            cands = []
+            for (x, y, z) in comp:
+                for dx in range(-max_span, max_span + 1):
+                    for dy in range(-max_span, max_span + 1):
+                        d = abs(dx) + abs(dy)
+                        if d < 2 or (best_d and d > best_d + 4):
+                            continue
+                        for dz in (0, 1, -1):
+                            cand = (x + dx, y + dy, z + dz)
+                            if cand in reach:
+                                cands.append((d, (x, y, z), cand))
+                                if best_d is None or d < best_d:
+                                    best_d = d
+            if best_d is None:
                 continue
-            prio = CLASS_PRIORITY.index("floor")
+            best_line = None
+            for d, isl, rch_ in sorted(cands, key=lambda c: c[0])[:60]:
+                if d > best_d + 4:
+                    break
+                got = line_of(rch_, isl)
+                if got is None:
+                    continue
+                cells, cost = got
+                if best_line is None or cost < best_line[0]:
+                    best_line = (cost, cells, isl, rch_)
+            if best_line is None:
+                continue
+            _, cells, (ix, iy, iz), (rx, ry, rz) = best_line
+
+            floor_prio = CLASS_PRIORITY.index("floor")
             carved_kinds: Counter = Counter()
             pads = 0
-            for (px, py) in path:
+            # dominant perpendicular, for guardrails and portal frames
+            if abs(ix - rx) >= abs(iy - ry):
+                perp = ((0, 1), (0, -1))
+            else:
+                perp = ((1, 0), (-1, 0))
+            for (px, py, col_glass, needs_pad) in cells:
                 for h in (0, 1, 2):
                     popped = winner.pop(key(px, py, rz + h), None)
                     if popped is not None:
                         carved_kinds[popped[1].split("[")[0].replace("minecraft:", "")] += 1
                         touched += 1
-                if winner.get(key(px, py, rz - 1)) is None:
-                    winner[key(px, py, rz - 1)] = (prio, FLOOR_CUBE)
+                if needs_pad:
+                    winner[key(px, py, rz - 1)] = (floor_prio, FLOOR_CUBE)
                     pads += 1
                     touched += 1
+                    # open-air catwalk: side decks + guardrails so the bridge
+                    # reads as a built walkway, not a floating stone strip
+                    # (refine_fences runs later and computes the arm states)
+                    for (sx, sy) in perp:
+                        qx, qy = px + sx, py + sy
+                        if winner.get(key(qx, qy, rz - 1)) is None:
+                            winner[key(qx, qy, rz - 1)] = (floor_prio, FLOOR_CUBE)
+                            touched += 1
+                        if winner.get(key(qx, qy, rz)) is None:
+                            winner[key(qx, qy, rz)] = (rail_prio, rail_block)
+                            touched += 1
+                if col_glass:
+                    # frame the glazing opening with mullion-grey concrete so
+                    # the hole reads as an intentional portal in the curtain
+                    # wall, matching the building's existing mullions
+                    for (sx, sy) in perp:
+                        qx, qy = px + sx, py + sy
+                        for h in (0, 1, 2):
+                            w = winner.get(key(qx, qy, rz + h))
+                            if w is not None and w[1].split("[")[0] == glass_block:
+                                winner[key(qx, qy, rz + h)] = (frame_prio, frame_block)
+                    lintel = winner.get(key(px, py, rz + 3))
+                    if lintel is not None and lintel[1].split("[")[0] == glass_block:
+                        winner[key(px, py, rz + 3)] = (frame_prio, frame_block)
             log.append({"from_xyz": (rx, ry, rz), "to_xyz": (ix, iy, iz),
-                        "len": len(path), "island_cells": len(comp),
+                        "len": len(cells), "island_cells": len(comp),
                         "floor_pads": pads, "carved": dict(carved_kinds)})
             built += 1
             linked = True
