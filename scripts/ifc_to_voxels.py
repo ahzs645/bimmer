@@ -1483,6 +1483,80 @@ def connect_hidden_rooms(winner, grid):
     return connected, hidden_found, len(hidden), carved
 
 
+def patch_floor_holes(winner, grid, min_ring=6, rounds=3):
+    """Make storey plates contiguous: fill pothole gaps in floors/ceilings.
+
+    Surface voxelization of non-watertight slab meshes drops cells - thin
+    spots, plate joints and penetrations round out of existence - leaving
+    1-2-cell holes in otherwise continuous floor plates. In game they read
+    as missing ceiling patches overhead and as pits you can fall through.
+
+    A cell qualifies for patching when the cell BELOW it is empty but at
+    least min_ring of its 8 plan-neighbours have solid support at that
+    level (so it is a pothole in a plate, not the rim of a real atrium or
+    facade edge - big openings never reach 6/8), it is interior (some block
+    within 4 above), and no stair block sits within a 3x3 column up to 3
+    below (stairwell openings stay open - S8 carved them deliberately).
+    Runs a few rounds so 2-cell-wide cracks close from their edges inward.
+    Returns cells filled.
+    """
+    X, plane = grid["X"], grid["plane"]
+    floor_prio = CLASS_PRIORITY.index("floor")
+    stair_bases = (STAIR_CUBE, STAIR_SHAPED.split("[")[0])
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    def unkey(k):
+        z = k // plane
+        rem = k - z * plane
+        return rem - (rem // X) * X, rem // X, z
+
+    DIRS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx, dy) != (0, 0)]
+    filled = 0
+    for _ in range(rounds):
+        # candidate air cells: plan-neighbours of existing blocks
+        cands = set()
+        for k in winner.keys():
+            x, y, z = unkey(k)
+            for dx, dy in DIRS:
+                if key(x + dx, y + dy, z) not in winner:
+                    cands.add((x + dx, y + dy, z))
+        add = []
+        for (x, y, z) in cands:
+            if key(x, y, z - 1) in winner:
+                continue
+            # never crush the storey below: if a floor lies within 2 cells
+            # under the fill, the filled cell would be its walking headroom
+            # (this exact bug cost ~3,700 walkable cells on the first try)
+            if key(x, y, z - 2) in winner or key(x, y, z - 3) in winner:
+                continue
+            ring = sum(1 for dx, dy in DIRS if key(x + dx, y + dy, z - 1) in winner)
+            if ring < min_ring:
+                continue
+            # no interior-ceiling requirement: roof-deck potholes drop the
+            # player INTO the building and patch just as safely (a real
+            # skylight voxelizes as glass cells, never as a missing cell,
+            # and atrium/light-well openings never reach a 6/8 ring)
+            stair_near = False
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (1, 2, 3):
+                        w = winner.get(key(x + dx, y + dy, z - dz))
+                        if w is not None and w[1].split("[")[0] in stair_bases:
+                            stair_near = True
+            if stair_near:
+                continue
+            add.append((x, y, z - 1))
+        if not add:
+            break
+        for (x, y, z) in add:
+            if key(x, y, z) not in winner:
+                winner[key(x, y, z)] = (floor_prio, FLOOR_CUBE)
+                filled += 1
+    return filled
+
+
 def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
     """Phase-2 rectification: reconnect walkable islands with short corridors.
 
@@ -1877,6 +1951,8 @@ def main() -> None:
     rooms_connected, rooms_hidden, rooms_left, _ = connect_hidden_rooms(winner, grid)
     print(f"Hidden door-less rooms: {rooms_hidden}; connected {rooms_connected} "
           f"through their hallway door, {rooms_left} remain sealed", flush=True)
+    holes_filled = patch_floor_holes(winner, grid)
+    print(f"Patched {holes_filled} floor-plate pothole cells", flush=True)
     seams_built, seam_cells, seam_log = stitch_seams(winner, grid)
     print(f"Stitched {seams_built} seam corridors ({seam_cells} cells)", flush=True)
     if args.floor_slabs:
@@ -1929,6 +2005,7 @@ def main() -> None:
         "hidden_rooms_found": rooms_hidden,
         "hidden_rooms_connected": rooms_connected,
         "hidden_rooms_left": rooms_left,
+        "floor_holes_patched": holes_filled,
         "seam_corridors": seams_built,
         "slabs_converted": slabs_converted,
         "fences_connected": fences_connected,
