@@ -218,9 +218,27 @@ def compute_wing_transforms(model, min_family=250, eps=9.0, min_wing=60):
             pivot = (W[i] + main[j]) / 2.0
             cands = sorted((-float(fam), 90.0 - float(fam)), key=abs)
             deg = min(cands, key=lambda d: (overlap(rotated(W, pivot, d)), abs(d)))
+            # push-apart: rotation alone cannot guarantee the wing does not
+            # swing INTO the main building (measured on UNBC: the big east
+            # wing's +32 put ~2% of its walls inside the spine). If the
+            # rotated wing still clips, translate it outward in whole-metre
+            # steps until interpenetration is (near) minimal - the seam gap
+            # this opens is exactly what stitch_seams bridges afterwards.
+            R = rotated(W, pivot, deg)
+            best_t = (0.0, 0.0)
+            best_c = overlap(R)
+            if best_c > max(3, int(0.005 * len(W))):
+                for ang in range(0, 360, 45):
+                    ux, uy = math.cos(math.radians(ang)), math.sin(math.radians(ang))
+                    for dist in (1, 2, 3, 4, 5):
+                        c = overlap(R + np.array([ux * dist, uy * dist]))
+                        # prefer less clipping, then the smaller shove
+                        if c + 0.4 * dist < best_c + 0.4 * math.hypot(*best_t):
+                            best_c = c
+                            best_t = (round(ux * dist, 3), round(uy * dist, 3))
             hull = ConvexHull(W)
             wings.append({"eqs": hull.equations.copy(), "pivot": pivot,
-                          "deg": deg, "n": len(W),
+                          "deg": deg, "n": len(W), "shift": best_t,
                           "cos": math.cos(math.radians(deg)),
                           "sin": math.sin(math.radians(deg))})
     return wings
@@ -234,13 +252,14 @@ def wing_for_point(wings, x, y, margin=2.5):
 
 
 def apply_wing(w, v):
-    """Rigidly rotate verts (N,3) about the wing pivot in the plan plane."""
+    """Rigidly rotate (and push-apart shift) verts about the wing pivot."""
     px, py = w["pivot"]
     c, s = w["cos"], w["sin"]
+    tx, ty = w.get("shift", (0.0, 0.0))
     out = v.copy()
     dx, dy = v[:, 0] - px, v[:, 1] - py
-    out[:, 0] = px + c * dx - s * dy
-    out[:, 1] = py + s * dx + c * dy
+    out[:, 0] = px + c * dx - s * dy + tx
+    out[:, 1] = py + s * dx + c * dy + ty
     return out
 
 
@@ -1772,12 +1791,41 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
                 perp = ((0, 1), (0, -1))
             else:
                 perp = ((1, 0), (-1, 0))
+            # longer connectors read as HALLWAYS, not crawl-tunnels: widen
+            # carved segments to 2 cells (one parallel lane) when the
+            # corridor is >= 3 long. The side lane degrades gracefully -
+            # cells that are protected (doors, stair envelopes, glass,
+            # existing corridors) just stay, narrowing that spot to 1.
+            widen = len(cells) >= 3
+            sxw, syw = perp[0]
             for (px, py, col_glass, needs_pad) in cells:
                 for h in (0, 1, 2):
                     popped = winner.pop(key(px, py, rz + h), None)
                     if popped is not None:
                         carved_kinds[popped[1].split("[")[0].replace("minecraft:", "")] += 1
                         touched += 1
+                if widen and not needs_pad:
+                    qx, qy = px + sxw, py + syw
+                    side_ok = winner.get(key(qx, qy, rz - 1)) is not None
+                    for h in (0, 1, 2):
+                        w_ = winner.get(key(qx, qy, rz + h))
+                        if w_ is None:
+                            continue
+                        base = w_[1].split("[")[0]
+                        if "_door" in w_[1] or base not in carveable:
+                            side_ok = False
+                            break
+                        if any((bb := block(qx, qy, rz + h - j)) is not None
+                               and bb.split("[")[0] in stair_family
+                               for j in (1, 2, 3)):
+                            side_ok = False
+                            break
+                    if side_ok:
+                        for h in (0, 1, 2):
+                            popped = winner.pop(key(qx, qy, rz + h), None)
+                            if popped is not None:
+                                carved_kinds[popped[1].split("[")[0].replace("minecraft:", "")] += 1
+                                touched += 1
                 if needs_pad:
                     winner[key(px, py, rz - 1)] = (floor_prio, FLOOR_CUBE)
                     pads += 1
@@ -1922,8 +1970,10 @@ def main() -> None:
     if args.rectify:
         wings = compute_wing_transforms(model)
         for w in wings:
+            tx, ty = w.get("shift", (0.0, 0.0))
+            shove = f" + shove ({tx:+.0f}, {ty:+.0f}) m" if (tx or ty) else ""
             print(f"Rectify: wing of {w['n']} walls rotates {w['deg']:+.0f} deg "
-                  f"about seam ({w['pivot'][0]:.0f}, {w['pivot'][1]:.0f}) m", flush=True)
+                  f"about seam ({w['pivot'][0]:.0f}, {w['pivot'][1]:.0f}) m{shove}", flush=True)
     meshes, door_verts, spirals, stair_groups, ex_stats = extract(
         model, args.threads, args.spiral, wings=wings)
     print("Solid faces by class:", ex_stats["solid_faces_by_class"], flush=True)

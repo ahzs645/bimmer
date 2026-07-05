@@ -140,6 +140,22 @@ wings. `--rectify` remains opt-in for the deployed page purely as a
 product choice — it visibly changes the campus footprint from the air
 (wings swing onto the grid), which is exactly what rectification means.
 
+### Collision control (push-apart)
+
+Rotation alone cannot guarantee a wing does not swing INTO the spine —
+measured on UNBC, rotation-only left 104 wing walls within 1 m of a main
+wall (vs 80 in the un-rotated source, which itself interlocks in places).
+`compute_wing_transforms` therefore adds a **push-apart step**: if the
+rotated wing still clips, it is translated outward in whole-metre steps
+(8 directions × up to 5 m, scored by residual clipping with a penalty on
+shove distance). On UNBC five of six wings take a 1–5 m shove and total
+clipping drops to **27 walls (0.7 % of the largest wing)** — cleaner than
+the original building. The widened seam gaps are exactly what
+`stitch_seams` then bridges, and connectors ≥ 3 cells long are carved
+**two cells wide** so they read as hallways rather than crawl-tunnels
+(the side lane degrades to 1-wide where a door, stair envelope or
+glazing protects the cell).
+
 ### Seam audit trail
 
 Every synthesized corridor is logged to **`out/<name>/seams.csv`**
