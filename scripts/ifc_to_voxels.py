@@ -1547,8 +1547,14 @@ def patch_floor_holes(winner, grid, min_ring=6, rounds=3):
                 continue
             # never crush the storey below: if a floor lies within 2 cells
             # under the fill, the filled cell would be its walking headroom
-            # (this exact bug cost ~3,700 walkable cells on the first try)
-            if key(x, y, z - 2) in winner or key(x, y, z - 3) in winner:
+            # (this exact bug cost ~3,700 walkable cells on the first try).
+            # EXCEPT on sky-open roof decks: there the pocket below is a
+            # plenum, not a room, and an uncovered hole drops the player
+            # INTO the building - cover those with glass (skylight look);
+            # the reachability audit confirms it costs nothing walkable.
+            low_floor = key(x, y, z - 2) in winner or key(x, y, z - 3) in winner
+            sky_open = not any(key(x, y, z + j) in winner for j in range(0, 10))
+            if low_floor and not sky_open:
                 continue
             ring = sum(1 for dx, dy in DIRS if key(x + dx, y + dy, z - 1) in winner)
             if ring < min_ring:
@@ -1566,14 +1572,128 @@ def patch_floor_holes(winner, grid, min_ring=6, rounds=3):
                             stair_near = True
             if stair_near:
                 continue
-            add.append((x, y, z - 1))
+            add.append((x, y, z - 1, low_floor))
         if not add:
             break
-        for (x, y, z) in add:
+        glass_prio = CLASS_PRIORITY.index("glass")
+        for (x, y, z, as_glass) in add:
             if key(x, y, z) not in winner:
-                winner[key(x, y, z)] = (floor_prio, FLOOR_CUBE)
+                if as_glass:
+                    winner[key(x, y, z)] = (glass_prio, CLASS_BLOCKS["glass"])
+                else:
+                    winner[key(x, y, z)] = (floor_prio, FLOOR_CUBE)
                 filled += 1
     return filled
+
+
+def stamp_terrain_aprons(winner, grid, radius=7, max_door_z=9):
+    """Ground exterior doors: grass/dirt aprons where the site should be.
+
+    The IFC has no site terrain, so ground-storey exit doors on the uphill
+    side open onto a 1-3 m drop to the flat export ground plane. For every
+    ground-storey door with a void side (no support within 4 below the
+    stepping-out cell, open sky above), lay a terrain apron: a grass cone
+    starting one below the door and sloping down 1 cell per ring until it
+    meets existing blocks, dirt-filled 3 deep beneath. Never overwrites
+    anything. Also naturally grounds annex wings whose only real-world
+    link is outside ground. Returns (doors aproned, cells placed).
+    """
+    X, plane = grid["X"], grid["plane"]
+    Y = plane // X
+    floor_prio = CLASS_PRIORITY.index("floor")
+    GRASS = "minecraft:grass_block"
+    DIRT = "minecraft:dirt"
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    def unkey(k):
+        z = k // plane
+        rem = k - z * plane
+        return rem - (rem // X) * X, rem // X, z
+
+    F2G = {v: k for k, v in GRID_TO_FACING.items()}
+    doors = []
+    for k, (_, b) in list(winner.items()):
+        if "_door" in b and "half=lower" in b:
+            x, y, z = unkey(k)
+            if z <= max_door_z:
+                doors.append((x, y, z, b.split("facing=")[1].split(",")[0]))
+
+    aproned = placed = 0
+    for (x, y, z, facing) in doors:
+        dx, dy = F2G[facing]
+        for s in (1, -1):
+            ox, oy = x + dx * s, y + dy * s
+            # void side: nothing to stand on within 4 below, sky above
+            if any(key(ox, oy, z - j) in winner for j in range(1, 5)):
+                continue
+            if any(key(ox, oy, z + j) in winner for j in range(1, 8)):
+                continue
+            n_before = placed
+            for rx in range(-radius, radius + 1):
+                for ry in range(-radius, radius + 1):
+                    r = max(abs(rx), abs(ry))
+                    top = z - 1 - r          # slope down 1 per ring
+                    if top < 0:
+                        continue
+                    cx, cy = ox + rx, oy + ry
+                    if cx < 0 or cy < 0 or cx >= X or cy >= Y:
+                        continue             # stay in-grid (key() aliases)
+                    if key(cx, cy, top) in winner or key(cx, cy, top + 1) in winner:
+                        continue             # never overwrite / never bury
+                    winner[key(cx, cy, top)] = (floor_prio, GRASS)
+                    placed += 1
+                    for d in (1, 2, 3):
+                        if top - d >= 0 and key(cx, cy, top - d) not in winner:
+                            winner[key(cx, cy, top - d)] = (floor_prio, DIRT)
+                            placed += 1
+            if placed > n_before:
+                aproned += 1
+    return aproned, placed
+
+
+def light_ceilings(winner, grid, spacing=6):
+    """Interior lighting: recess sea lanterns into ceilings on a grid.
+
+    The model has no light fixtures we map yet, so interiors are pitch
+    black under vanilla lighting. On a spacing x spacing plan grid, every
+    interior walking cell (solid support, 2 air, ceiling within 4) gets
+    the first solid cell above swapped for a sea lantern - full cube, so
+    the storey above keeps its floor; light level 15 pools below.
+    Doors, stairs, fences and glass are never replaced.
+    Returns lanterns placed.
+    """
+    X, plane = grid["X"], grid["plane"]
+    LANTERN = "minecraft:sea_lantern"
+    swappable = {CLASS_BLOCKS[c] for c in ("floor", "roof", "structure", "wall", "other")}
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    def unkey(k):
+        z = k // plane
+        rem = k - z * plane
+        return rem - (rem // X) * X, rem // X, z
+
+    lit = 0
+    for k in list(winner.keys()):
+        x, y, z = unkey(k)
+        if x % spacing or y % spacing:
+            continue
+        # k must be a support with 2-air walking space above
+        if key(x, y, z + 1) in winner or key(x, y, z + 2) in winner:
+            continue
+        for j in (3, 4):
+            ck = key(x, y, z + j)
+            w = winner.get(ck)
+            if w is None:
+                continue
+            if w[1].split("[")[0] in swappable:
+                winner[ck] = (w[0], LANTERN)
+                lit += 1
+            break
+    return lit
 
 
 def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
@@ -1603,6 +1723,7 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
     Returns (corridors_built, cells_touched).
     """
     X, plane = grid["X"], grid["plane"]
+    Y = plane // X
 
     def key(x, y, z):
         return int(x) + X * int(y) + plane * int(z)
@@ -1625,6 +1746,12 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
         return b is None or "_door" in b
 
     def standable(x, y, z):
+        # bounds first: key() packs x + X*y + plane*z, so key(-1, y, z)
+        # ALIASES the far end of the previous row - once terrain aprons
+        # touched the grid edge, the BFS stepped onto phantom cells and
+        # marched into negative space until the OOM killer stopped it
+        if x < 0 or y < 0 or x >= X or y >= Y or z < 1:
+            return False
         b = block(x, y, z - 1)
         return (b is not None and "_door" not in b
                 and passable(x, y, z) and passable(x, y, z + 1))
@@ -1669,7 +1796,11 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
 
     built = touched = 0
     log: list[dict] = []
-    for _ in range(max_links):
+    # islands that fail to link twice stay skipped - re-scanning every
+    # far-from-everything island each iteration made the pass quadratic
+    # once terrain aprons added many isolated grass islands
+    hopeless: dict = {}
+    for _round in range(max_links + 8):   # one link per round (re-BFS between)
         reach = bfs(seeds())
         if not reach:
             break
@@ -1748,6 +1879,9 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
             return cells, cost
 
         for comp in islands:
+            sig = min(comp)
+            if hopeless.get(sig, 0) >= 2:
+                continue
             comp_set = set(comp)
             # collect near-minimal candidate pairs, then take the cheapest
             # FEASIBLE line - the shortest is not best when it punches
@@ -1761,13 +1895,20 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
                         d = abs(dx) + abs(dy)
                         if d < 2 or (best_d and d > best_d + 4):
                             continue
+                        # flat pairs preferred; +-1-level pairs allowed but
+                        # cost extra AND get an oriented stair placed at the
+                        # junction so the step is walkable (a bare cube step
+                        # may lack jump room -> carved-but-not-connected
+                        # links that rebuilt every round until the cap)
                         for dz in (0, 1, -1):
                             cand = (x + dx, y + dy, z + dz)
                             if cand in reach:
-                                cands.append((d, (x, y, z), cand))
+                                cands.append((d + (0 if dz == 0 else 3),
+                                              (x, y, z), cand))
                                 if best_d is None or d < best_d:
                                     best_d = d
             if best_d is None:
+                hopeless[sig] = hopeless.get(sig, 0) + 1
                 continue
             best_line = None
             for d, isl, rch_ in sorted(cands, key=lambda c: c[0])[:60]:
@@ -1780,10 +1921,12 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
                 if best_line is None or cost < best_line[0]:
                     best_line = (cost, cells, isl, rch_)
             if best_line is None:
+                hopeless[sig] = hopeless.get(sig, 0) + 1
                 continue
             _, cells, (ix, iy, iz), (rx, ry, rz) = best_line
 
             floor_prio = CLASS_PRIORITY.index("floor")
+            stair_prio = CLASS_PRIORITY.index("stair")
             carved_kinds: Counter = Counter()
             pads = 0
             # dominant perpendicular, for guardrails and portal frames
@@ -1854,11 +1997,28 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
                     lintel = winner.get(key(px, py, rz + 3))
                     if lintel is not None and lintel[1].split("[")[0] == glass_block:
                         winner[key(px, py, rz + 3)] = (frame_prio, frame_block)
+            if iz == rz + 1 and cells:
+                # island one level up: a stair at the junction makes the
+                # step a WALK (a bare cube edge could need jump room the
+                # ceiling does not give)
+                jx, jy = cells[-1][0], cells[-1][1]
+                tdx, tdy = ix - jx, iy - jy
+                if (tdx, tdy) not in GRID_TO_FACING:
+                    tdx, tdy = (tdx, 0) if abs(tdx) >= abs(tdy) else (0, tdy)
+                facing = GRID_TO_FACING.get((tdx, tdy), "north")
+                winner[key(jx, jy, rz)] = (
+                    stair_prio,
+                    f"{STAIR_SHAPED}[facing={facing},half=bottom,shape=straight]")
             log.append({"from_xyz": (rx, ry, rz), "to_xyz": (ix, iy, iz),
                         "len": len(cells), "island_cells": len(comp),
                         "floor_pads": pads, "carved": dict(carved_kinds)})
             built += 1
             linked = True
+            # count the attempt: an island that needs a THIRD corridor is
+            # one whose links carve but never connect - stop feeding it
+            hopeless[sig] = hopeless.get(sig, 0) + 1
+            if built >= max_links:
+                return built, touched, log
             break   # re-BFS so the next island can ride this corridor
         if not linked:
             break
@@ -2003,8 +2163,13 @@ def main() -> None:
           f"through their hallway door, {rooms_left} remain sealed", flush=True)
     holes_filled = patch_floor_holes(winner, grid)
     print(f"Patched {holes_filled} floor-plate pothole cells", flush=True)
+    doors_grounded, terrain_cells = stamp_terrain_aprons(winner, grid)
+    print(f"Grounded {doors_grounded} exterior door sides with terrain aprons "
+          f"({terrain_cells} grass/dirt cells)", flush=True)
     seams_built, seam_cells, seam_log = stitch_seams(winner, grid)
     print(f"Stitched {seams_built} seam corridors ({seam_cells} cells)", flush=True)
+    lanterns = light_ceilings(winner, grid)
+    print(f"Recessed {lanterns} ceiling sea lanterns for interior light", flush=True)
     if args.floor_slabs:
         slabs_converted = refine_floor_slabs(winner, grid)
         print(f"Refined {slabs_converted} thin floor cubes -> slabs", flush=True)
@@ -2056,6 +2221,8 @@ def main() -> None:
         "hidden_rooms_connected": rooms_connected,
         "hidden_rooms_left": rooms_left,
         "floor_holes_patched": holes_filled,
+        "doors_grounded": doors_grounded,
+        "ceiling_lanterns": lanterns,
         "seam_corridors": seams_built,
         "slabs_converted": slabs_converted,
         "fences_connected": fences_connected,
