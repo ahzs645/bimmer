@@ -16,6 +16,7 @@ on:
     paths:
       - "blockcraft/**"
       - "renderers/mcweb/unbc_world.zip"
+      - "tools/choose.html"
       - ".github/workflows/pages.yml"
 
 permissions:
@@ -62,7 +63,8 @@ jobs:
       - name: Assemble site
         run: |
           mkdir site/blockcraft && cp -r blockcraft/client/dist/* site/blockcraft/
-          ls site site/blockcraft | head -30
+          mkdir site/choose && cp tools/choose.html site/choose/index.html
+          ls site site/blockcraft site/choose | head -40
 
       - uses: actions/upload-pages-artifact@v3
         with:

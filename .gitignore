@@ -54,3 +54,4 @@ Thumbs.db
 /renderers/mcweb/render/three*.js
 /renderers/mcweb/render/scene.json
 /renderers/mcweb/render/*.png
+.cache/
