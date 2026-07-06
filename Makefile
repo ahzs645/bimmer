@@ -7,22 +7,31 @@ IFC   ?= UNBC Model - 2026-06-30 - FINAL (Fixed Library).ifc
 PITCH ?= 1.0
 NAME  ?= unbc_$(subst .,p,$(PITCH))m
 PY    := .venv/bin/python
-MCWEB_WORLD ?= out/unbc_1m
+# Which pipeline output the renderer dev servers load (run 'make p1' first).
+WORLD ?= out/unbc_1m
+MCWEB_WORLD ?= $(WORLD)
 
-.PHONY: help setup p1 p05 all voxels viewer mcweb clean
+.PHONY: help setup p1 p05 all voxels viewer mcweb blockcraft blockcraft-static blockcraft-stop clean
 
 help:
-	@echo "Targets:"
-	@echo "  make setup     create .venv and install dependencies"
-	@echo "  make p1        full pipeline at 1.0 m  -> out/unbc_1m + viewer data"
-	@echo "  make p05       full pipeline at 0.5 m  -> out/unbc_0p5m + viewer data"
-	@echo "  make all       run both p1 and p05"
-	@echo "  make voxels    full pipeline at PITCH=$(PITCH) (NAME=$(NAME))"
-	@echo "  make viewer    serve the Three.js web viewer at http://127.0.0.1:8765/"
-	@echo "  make mcweb     export MCWEB_WORLD ($(MCWEB_WORLD)) to an Anvil save and"
-	@echo "                 launch the local minecraft-web-client at http://localhost:3000/"
-	@echo "                 (boots straight into the building; run 'make p1' first)"
-	@echo "  make clean     remove generated out/ and web/data/ trees"
+	@echo "Pipeline:"
+	@echo "  make setup             create .venv and install dependencies"
+	@echo "  make p1                full pipeline at 1.0 m  -> out/unbc_1m + viewer data"
+	@echo "  make p05               full pipeline at 0.5 m  -> out/unbc_0p5m + viewer data"
+	@echo "  make all               run both p1 and p05"
+	@echo "  make voxels            full pipeline at PITCH=$(PITCH) (NAME=$(NAME))"
+	@echo ""
+	@echo "Renderer dev servers (all load WORLD=$(WORLD); override with WORLD=out/unbc_0p5m):"
+	@echo "  make viewer            Three.js inspection viewer      http://127.0.0.1:8765/"
+	@echo "  make mcweb             minecraft-web-client (real vanilla blocks: doors,"
+	@echo "                         stairs, fences)                 http://localhost:3000/"
+	@echo "  make blockcraft        BlockCraft, multiplayer dev (server :3002 + client)"
+	@echo "                                                         http://localhost:3001/"
+	@echo "  make blockcraft-static BlockCraft, serverless static build (what GitHub"
+	@echo "                         Pages serves)                   http://localhost:3003/"
+	@echo "  make blockcraft-stop   stop the BlockCraft dev server + client"
+	@echo ""
+	@echo "  make clean             remove generated out/ and web/data/ trees"
 
 setup:
 	/opt/homebrew/bin/python3.11 -m venv .venv
@@ -50,6 +59,19 @@ mcweb:
 	renderers/mcweb/run.sh export "$(MCWEB_WORLD)/blocks.csv" "$(MCWEB_WORLD)/world"
 	renderers/mcweb/run.sh pack "$(MCWEB_WORLD)/world"
 	renderers/mcweb/serve_client.sh "$(MCWEB_WORLD)/world.zip"
+
+# BlockCraft (cube-engine fallback renderer). Both targets regenerate the
+# building data from WORLD's blocks.csv first (idempotent, ~seconds).
+blockcraft:
+	$(PY) scripts/setup_blockcraft.py "$(WORLD)/blocks.csv"
+	scripts/run_blockcraft.sh
+
+blockcraft-static:
+	$(PY) scripts/setup_blockcraft.py "$(WORLD)/blocks.csv"
+	scripts/build_blockcraft_static.sh serve
+
+blockcraft-stop:
+	scripts/run_blockcraft.sh stop
 
 clean:
 	rm -rf out/unbc_* web/data/unbc_* web/data/datasets.json

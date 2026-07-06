@@ -35,11 +35,32 @@ table, functional doors, per-stage reference, and Minecraft import instructions.
 | `scripts/inspect_ifc.py` | fast structural probe of an IFC |
 | `renderers/mcweb/` | export the building to a Java world save for the **minecraft-web-client** renderer (real doors/stairs/slabs/fences) |
 | `Makefile` | `setup` / `p1` / `p05` / `all` / `viewer` / `clean` |
+| **[HANDOFF.md](HANDOFF.md)** | **start here to continue this work**: current audited state, known residuals, ranked backlog, and the traps that already bit us |
 | **[PIPELINE.md](PIPELINE.md)** | full design + usage docs |
 | **[BLOCKCRAFT.md](BLOCKCRAFT.md)** | walk the building in a browser (BlockCraft, flat world) |
 | **[RENDERERS.md](RENDERERS.md)** | the two walkable browser renderers compared (BlockCraft vs minecraft-web-client) |
+| **[LESSONS.md](LESSONS.md)** | failure catalog (doors/stairs/railings): symptom → root cause → fix, the verification workflow, player behaviour, open items |
+| **[ASSUMPTIONS.md](ASSUMPTIONS.md)** | every assumption the conversion makes (floor/wall thickness, door preconditions, stair physics) and the artifact you get when one is violated |
+| **[RECTIFY.md](RECTIFY.md)** | plan-rectification proposal: conform angled wings to the voxel grid, then replay doors/windows parametrically |
 | **[PRIOR_ART.md](PRIOR_ART.md)** | researched survey of existing IFC/BIM→Minecraft work |
 | `TESTED_OPTIONS.md` | log of tools evaluated while building this |
+
+## See it in a browser
+
+**Deployed:** enable GitHub Pages (Settings → Pages → Source: *GitHub
+Actions*); `.github/workflows/pages.yml` publishes on every push to `main`:
+the site root boots straight into the building in **minecraft-web-client**,
+`/blockcraft/` is the lightweight fallback, `/choose/` is a landing page
+linking both.
+
+**Locally, one command** (plain Node, no dependencies):
+
+```sh
+npm run dev        # or: pnpm dev
+# chooser  -> http://localhost:8080
+# mcweb    -> http://localhost:8091   (mcraft.fun proxied, local world.zip)
+# blockcraft -> http://localhost:8092 (build once: scripts/build_blockcraft_static.sh)
+```
 
 ## Step 0: getting an IFC from the RVT
 

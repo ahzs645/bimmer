@@ -27,8 +27,10 @@ BLOCK_STYLE = {
     "minecraft:light_blue_stained_glass": ("Glazing", [96, 196, 226], 0.45),
     "minecraft:oak_door": ("Doors (functional)", [168, 120, 60], 1.0),
     "minecraft:oak_planks": ("Doors", [168, 134, 80], 1.0),
-    "minecraft:iron_bars": ("Railings", [170, 175, 182], 0.85),
+    "minecraft:oak_fence": ("Railings", [154, 123, 79], 0.85),
     "minecraft:stone_bricks": ("Stairs / ramps", [128, 127, 128], 1.0),
+    "minecraft:stone_brick_stairs": ("Stairs (oriented)", [122, 121, 122], 1.0),
+    "minecraft:smooth_stone_slab": ("Floors / slabs", [159, 159, 159], 1.0),
     "minecraft:deepslate_tiles": ("Roof", [64, 64, 72], 1.0),
     "minecraft:light_gray_concrete": ("Other", [150, 150, 140], 1.0),
 }

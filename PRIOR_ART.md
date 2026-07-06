@@ -149,3 +149,58 @@ Sources: [IfcOpenShell/voxelization_toolkit](https://github.com/IfcOpenShell/vox
 ---
 
 *Generated 2026-06-30 by an 8-angle parallel web-research workflow (10 agents, 168 tool calls, 88 raw findings → fact-checked → synthesized).*
+
+---
+
+## Addendum: hole-filling in voxelized floor plates (researched 2026-07)
+
+Context: our `patch_floor_holes` pass (LESSONS.md S12) fills 1–2-cell
+potholes that surface voxelization of non-watertight slab meshes leaves in
+floor/ceiling/roof plates. What do others do?
+
+**The same idea ships in the reference IFC voxelizer.**
+[IfcOpenShell voxelization_toolkit](https://github.com/IfcOpenShell/voxelization_toolkit)
+provides `fill_gaps()` — literally "*fills 1-sized holes in input*" — plus
+`offset_xy()` (2.5-D dilation) and `collapse()` (flatten slab thickness for
+floor-area analysis). So plate-hole inpainting is a first-class primitive in
+the closest prior-art tool; ours differs by adding the two guards a
+*playable* world needs that an analysis grid doesn't: never fill a real
+atrium/light-well (the ≥6/8-ring test — large openings never qualify) and
+never crush 2-cell headroom below (their grids don't have players in them).
+
+**The games industry (Recast/Detour) solves it with resolution + span
+logic, not inpainting.**
+[Recast](https://github.com/recastnavigation/recastnavigation), the
+industry-standard walkable-surface extractor, rasterizes into a 2.5-D
+heightfield and handles small holes by (a) *decreasing vertical cell
+height* ("if you get small holes … decrease cell height" —
+[Recast settings uncovered](http://digestingduck.blogspot.com/2009/08/recast-settings-uncovered.html)),
+(b) merging near-height spans via `walkableClimb`, and (c) post-filters
+(`filterLowHangingWalkableObstacles`, `minRegionSize`). Transfer: our
+planned 0.5 m-pitch deploy is exactly Recast's first remedy, and our
+jump-aware climb rules mirror `walkableClimb`.
+
+**The principled upstream fixes exist but are heavyweight.**
+Robust *solid* voxelization of leaky meshes via
+[generalized winding numbers](https://www.researchgate.net/publication/262165781_Robust_Inside-Outside_Segmentation_Using_Generalized_Winding_Numbers)
+(and the [fast winding number](https://dl.acm.org/doi/10.1145/3197517.3201337)
+follow-up) classifies inside/outside regardless of holes and
+self-intersections; [OpenVDB MeshToVolume](https://www.openvdb.org/documentation/doxygen/MeshToVolume_8h.html)
+offers an unsigned-distance mode + outside flood fill for non-watertight
+input. Either would prevent *some* dropout at the source (per-slab solid
+classification) — but neither fixes thin-slab quantization at 1 m (a 20 cm
+slab is still thinner than a cell), so the post-pass remains necessary.
+
+**Indoor-reconstruction literature does per-storey 2-D closing.**
+Floor-plan-from-point-cloud pipelines (e.g.
+[FloorSAM](https://arxiv.org/pdf/2509.15750), RANSAC floor-plan
+reconstruction) routinely apply morphological closing to floor/wall masks
+per storey before room segmentation — the 2.5-D "plate mask closing" our
+pass approximates cell-wise.
+
+Net: our constrained ring-fill is a recognized pattern (voxec's
+`fill_gaps`, floor-mask closing) plus domain guards nobody else needs;
+the known upgrades, in order of value, are finer pitch (Recast's answer,
+already on the backlog) and per-element winding-number solidification
+(research-grade, only worth it if a future model shows systematic slab
+dropout beyond what ring-filling catches).

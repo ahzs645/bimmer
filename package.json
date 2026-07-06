@@ -1,0 +1,8 @@
+{
+  "name": "bimmer",
+  "private": true,
+  "description": "IFC (BIM) -> Minecraft voxel pipeline + walkable browser renderers",
+  "scripts": {
+    "dev": "node tools/dev-server.js"
+  }
+}

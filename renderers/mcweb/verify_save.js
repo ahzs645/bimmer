@@ -43,7 +43,7 @@ async function main() {
   const seen = new Map()
   const counts = new Map()
   const noteProps = { oak_door: ['half', 'facing'], stone_brick_stairs: ['facing', 'half', 'shape'],
-    smooth_stone_slab: ['type'], oak_fence: [] }
+    smooth_stone_slab: ['type'], oak_fence: ['north', 'east', 'south', 'west'] }
   let scannedChunks = 0
   for (const [cx, cz] of chunkCoords) {
     let chunk
@@ -76,7 +76,7 @@ async function main() {
   const caps = [
     ['stone_brick_stairs', 'shape', 'real stair block-states'],
     ['smooth_stone_slab', 'type', 'real slabs'],
-    ['oak_fence', null, 'fence railings'],
+    ['oak_fence', 'north', 'fence railings (connection states)'],
     ['light_blue_stained_glass', null, 'stained-glass glazing'],
   ]
   for (const [name, prop, label] of caps) {

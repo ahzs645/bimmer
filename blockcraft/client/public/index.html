@@ -3,6 +3,10 @@
 
 <head>
     <title>BlockCraft</title>
+    <!-- COOP/COEP shim so SharedArrayBuffer works on static hosts (GitHub
+         Pages can't set the headers). No-op when the server already sets
+         them (webpack devServer / Node server). MIT, vendored. -->
+    <script src="coi-serviceworker.min.js"></script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, user-scalable=yes, minimum-scale=1.0, maximum-scale=1.0">
     <meta name=description content="BlockCraft is a free to play WebGL implementation of a procedurally-generated voxel world that runs on the web browser. This project started off as a Minecraft Classic clone but has evolved to include multiplayer PvP, crafting, shaders and much more!">
