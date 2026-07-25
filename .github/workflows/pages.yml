@@ -44,6 +44,14 @@ jobs:
             https://github.com/zardoy/minecraft-web-client/releases/latest/download/self-host.zip
           mkdir mwc && unzip -q self-host.zip -d mwc
           mkdir site && cp -r mwc/dist/* site/
+      - name: Fix WASM mesher path for subpath hosting
+        run: |
+          # The bundle's mesher worker hardcodes fetch("/wasm_mesher_bg.wasm").
+          # On a project-Pages subpath (…/bimmer/) that 404s, WASM init fails,
+          # every chunk mesh throws, and visitors spawn in an empty sky.
+          # A relative path resolves against the worker's own URL instead.
+          sed -i 's|"/wasm_mesher_bg.wasm"|"wasm_mesher_bg.wasm"|g' site/mesherWasm.js
+          ! grep -rl '"/wasm_mesher_bg.wasm"' site/
       - name: Add the UNBC world and boot straight into it
         run: |
           cp renderers/mcweb/unbc_world.zip site/world.zip
