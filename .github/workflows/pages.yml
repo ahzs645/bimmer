@@ -52,6 +52,15 @@ jobs:
           # A relative path resolves against the worker's own URL instead.
           sed -i 's|"/wasm_mesher_bg.wasm"|"wasm_mesher_bg.wasm"|g' site/mesherWasm.js
           ! grep -rl '"/wasm_mesher_bg.wasm"' site/
+      - name: Accept GitHub Pages' zip Content-Type on map download
+        run: |
+          # Pages serves .zip as application/x-zip-compressed; the client's
+          # map downloader alerts "Invalid map file" unless the type starts
+          # with application/zip (download still proceeds, but every visitor
+          # gets the popup). Accept any application/* type; a real failure
+          # (an HTML error page, text/html) still alerts.
+          sed -i 's|startsWith("application/zip")|startsWith("application/")|g' site/static/js/index.*.js
+          grep -l 'startsWith("application/")' site/static/js/index.*.js
       - name: Add the UNBC world and boot straight into it
         run: |
           cp renderers/mcweb/unbc_world.zip site/world.zip
