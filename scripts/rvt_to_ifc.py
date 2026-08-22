@@ -202,7 +202,18 @@ def main() -> int:
     ifc = (args.out or rvt.with_suffix(".ifc")).expanduser().resolve()
     ifc.parent.mkdir(parents=True, exist_ok=True)
 
-    extract(rvt, ifc, tools, args.revit_version)
+    try:
+        extract(rvt, ifc, tools, args.revit_version)
+    except subprocess.CalledProcessError as exc:
+        # The parser prints its own diagnosis above (a bad container, an
+        # unsupported release, a decoder that gave up). Re-raising a Python
+        # traceback on top of it buries the only useful message on screen.
+        print(f"\nrvt_to_ifc: the parser failed on {rvt.name} (exit {exc.returncode}). "
+              "Its own error is above.\n"
+              "  If the file is not a Revit container, the message says so.\n"
+              "  If the release is misdetected, try --revit-version.\n"
+              f"  Parser commit: {tools['commit'] or 'unknown'}", file=sys.stderr)
+        return exc.returncode or 1
 
     contract = None
     if not args.skip_contract:

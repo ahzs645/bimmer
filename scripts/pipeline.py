@@ -38,7 +38,13 @@ SCRIPTS = ROOT / "scripts"
 def run(label: str, cmd: list[str]) -> None:
     print(f"\n=== {label} ===", flush=True)
     print("  " + " ".join(repr(c) if " " in c else c for c in cmd), flush=True)
-    subprocess.run(cmd, check=True)
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        # Each stage diagnoses its own failure on the way out. A traceback from
+        # this driver on top of that buries the message that actually explains
+        # what went wrong, so fail with the stage name and nothing else.
+        raise SystemExit(f"\npipeline: stage '{label}' failed (exit {result.returncode}); "
+                         "its error is above.")
 
 
 def refresh_datasets(web_dir: Path) -> list[dict]:
