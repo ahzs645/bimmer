@@ -76,6 +76,15 @@ again, re-run the contract gate, and diff the resulting world. A parser bump
 that changes the contract report is exactly the signal the pin exists to
 produce.
 
+> **The current pin predates the stair-assembly work.** It points at Reviter's
+> `main`, which does not yet write `IfcRelAggregates` for stairs (§3), so a
+> `make rvt` run today produces an IFC the contract gate fails on
+> `stair_aggregation` — correctly, and by design: the gate is doing its job.
+> The pin should move to Reviter's tip once that work lands on `main`, at which
+> point re-run `make contract` and diff the world. Pinning to an unmerged
+> branch instead would tie this repository to a ref that can be force-pushed or
+> deleted, which is the one thing a pin exists to prevent.
+
 ### What is checkable without the model
 
 The 67 MB RVT is not in either repository and never will be, so the joins that
