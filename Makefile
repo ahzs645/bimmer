@@ -1,9 +1,11 @@
-# IFC -> Minecraft voxel pipeline.
+# RVT/IFC -> Minecraft voxel pipeline.
 # Override the source file or resolution on the command line, e.g.:
 #   make p1 IFC="Some Other Model.ifc"
+#   make rvt RVT="Some Other Model.rvt"
 #   make voxels PITCH=0.25 NAME=unbc_25cm
 
 IFC   ?= UNBC Model - 2026-06-30 - FINAL (Fixed Library).ifc
+RVT   ?= UNBC Model - 2026-06-30 - FINAL (Fixed Library) (1).rvt
 PITCH ?= 1.0
 NAME  ?= unbc_$(subst .,p,$(PITCH))m
 PY    := .venv/bin/python
@@ -11,7 +13,8 @@ PY    := .venv/bin/python
 WORLD ?= out/unbc_1m
 MCWEB_WORLD ?= $(WORLD)
 
-.PHONY: help setup p1 p05 all voxels viewer mcweb blockcraft blockcraft-static blockcraft-stop clean
+.PHONY: help setup parser-setup parser-check contract p1 p05 all voxels rvt \
+        viewer mcweb blockcraft blockcraft-static blockcraft-stop clean
 
 help:
 	@echo "Pipeline:"
@@ -20,6 +23,12 @@ help:
 	@echo "  make p05               full pipeline at 0.5 m  -> out/unbc_0p5m + viewer data"
 	@echo "  make all               run both p1 and p05"
 	@echo "  make voxels            full pipeline at PITCH=$(PITCH) (NAME=$(NAME))"
+	@echo ""
+	@echo "Parser (RVT -> IFC without Revit, via the parsers/reviter submodule):"
+	@echo "  make parser-setup      check out the submodule and install its deps"
+	@echo "  make parser-check      preflight the parser (needs no model)"
+	@echo "  make rvt               RVT=$(RVT) straight through to a world"
+	@echo "  make contract          grade IFC=... against what the engine reads"
 	@echo ""
 	@echo "Renderer dev servers (all load WORLD=$(WORLD); override with WORLD=out/unbc_0p5m):"
 	@echo "  make viewer            Three.js inspection viewer      http://127.0.0.1:8765/"
@@ -37,6 +46,26 @@ setup:
 	/opt/homebrew/bin/python3.11 -m venv .venv
 	$(PY) -m pip install --upgrade pip
 	$(PY) -m pip install -r requirements-pipeline.txt pillow
+
+# The parser is a Node/TypeScript project pinned as a submodule; the seam
+# between it and this engine is the IFC contract, not code (see REVITER.md).
+parser-setup:
+	git submodule update --init parsers/reviter
+	npm ci --prefix parsers/reviter
+
+# Deliberately the system python, not $(PY): the preflight needs nothing but
+# node, so it must be answerable before `make setup` has built the venv --
+# which is exactly when someone is trying to find out why the parser will not
+# run. `contract` and `rvt` do need the venv (ifcopenshell).
+parser-check:
+	python3 scripts/rvt_to_ifc.py --check
+
+contract:
+	$(PY) scripts/check_ifc_contract.py "$(IFC)"
+
+# Stage 0 + the whole pipeline, from the proprietary format.
+rvt:
+	$(PY) scripts/pipeline.py "$(RVT)" --pitch $(PITCH) --name $(NAME)
 
 p1:
 	$(PY) scripts/pipeline.py "$(IFC)" --pitch 1.0 --name unbc_1m

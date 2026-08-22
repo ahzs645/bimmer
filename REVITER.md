@@ -13,14 +13,82 @@ folder](https://drive.google.com/drive/folders/1Dx_v2v6M1LI02E4sngLyoyVMdnohijLT
 holds the 67 MB RVT, the 80 MB Autodesk IFC and a 25.6 MB Autodesk GLB, and
 Reviter's audits pin all three by SHA-256. They have never been joined.
 
-This document works out what joining them takes: the exact transformation chain
-from Revit's internal frame to a Minecraft block coordinate, what the voxel
-engine actually reads out of an IFC, and — measured against Reviter's own dated
-audits — which of those things a Reviter export supplies today.
+They are joined now: Reviter is pinned as a git submodule at
+`parsers/reviter`, and `scripts/pipeline.py` takes a `.rvt`. This document is
+how that is wired and why — the exact transformation chain from Revit's internal
+frame to a Minecraft block coordinate, what the voxel engine actually reads out
+of an IFC, and — measured against Reviter's own dated audits — which of those
+things a Reviter export supplies today.
 
 > Every figure below is quoted from a dated run on **one building**, and is
 > evidence for a decision rather than a standing fact. Both repositories are
 > explicit about this; see `docs/validating-on-a-second-building.md` in Reviter.
+
+---
+
+## 0. How the two are wired
+
+```
+RVT ──[parsers/reviter]──▶ IFC ──[scripts/ifc_to_voxels.py]──▶ voxels ──▶ world
+       the parser                  the interpreter
+     TypeScript / Node            Python / IfcOpenShell
+```
+
+```sh
+make parser-setup                    # submodule + its npm deps, once
+make parser-check                    # preflight; needs no model
+make rvt RVT="UNBC Model ... .rvt"    # stage 0 + the whole pipeline
+```
+
+### The seam is the contract, not the code
+
+Nothing in this repository imports Reviter's TypeScript. `scripts/rvt_to_ifc.py`
+runs its CLI as a subprocess and then grades the file it produced with
+`check_ifc_contract.py`. That is the whole coupling, and it is deliberate.
+
+Reviter is a clean-room decoder for a proprietary format. Its internals change
+constantly — the record layouts, the ownership rules, the geometry replay — and
+every one of its thresholds is fitted to this one building. Importing its
+modules would mean a decoder improvement could break a Minecraft world, and that
+neither project could be reasoned about alone. Holding it to a *file-level*
+contract instead means the parser is free to change everything except the small,
+checkable set of facts in §2, and a failure lands in one of two clearly-labelled
+places: the parser wrote a bad file, or the engine misread a good one.
+
+This is also why the submodule is pinned to a commit rather than tracked to a
+branch. Reviter's own docs are emphatic that every figure is an observation from
+a dated run; a voxel world inherits that. `rvt_to_ifc.py` writes a
+`<out>.provenance.json` beside every IFC it produces, recording the parser
+commit, the node version, and the SHA-256 of both the source RVT and the output.
+"The stairs are wrong" is a different bug depending on which parser wrote the
+IFC, and without the pin there is no way to tell which.
+
+### Working with the pin
+
+```sh
+git clone --recurse-submodules ...          # or: git submodule update --init
+git submodule update --remote parsers/reviter   # move to reviter/main's tip
+make parser-check && make contract IFC=...      # then re-grade before trusting it
+```
+
+Moving the pin is a deliberate act with a test attached: convert the model
+again, re-run the contract gate, and diff the resulting world. A parser bump
+that changes the contract report is exactly the signal the pin exists to
+produce.
+
+### What is checkable without the model
+
+The 67 MB RVT is not in either repository and never will be, so the joins that
+can be verified without it are:
+
+| | |
+|---|---|
+| `python3 scripts/rvt_to_ifc.py --self-test` | version comparison, every preflight failure path, and a stub-parser round trip through the contract gate |
+| `python3 scripts/rvt_to_ifc.py --check` | the real submodule, node version, and installed deps |
+| `python3 scripts/check_ifc_contract.py --self-test` | five synthetic producers across IFC2X3 and IFC4 |
+
+What none of them establishes is that the parser recovers this building
+correctly. That needs the model, and the answer is §3.
 
 ---
 

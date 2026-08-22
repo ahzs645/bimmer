@@ -8,16 +8,31 @@ Built and tested end-to-end on the **UNBC campus model** (Revit → IFC2X3, 80 M
 ~41k elements, 13 storeys, ~218 × 375 × 19 m).
 
 ```
-RVT ──Revit/APS──▶ IFC ──pipeline──▶ .schem / .litematic ──WorldEdit/FAWE──▶ Minecraft
-                                  └──▶ interactive web viewer
+RVT ──parsers/reviter──▶ IFC ──pipeline──▶ .schem / .litematic ──WorldEdit/FAWE──▶ Minecraft
+     (or Revit/APS)                     └──▶ interactive web viewer
+      the parser            the interpreter
 ```
+
+The front half is [**Reviter**](https://github.com/ahzs645/reviter), a
+clean-room RVT decoder pinned here as a git submodule, so the whole chain runs
+without a Revit licence. The two halves meet at a **file-level contract** rather
+than at code — see [REVITER.md](REVITER.md).
 
 ## Quick start
 
 ```sh
+git clone --recurse-submodules https://github.com/ahzs645/bimmer
 make setup          # .venv (Python 3.11) + dependencies   (run once)
 make p1             # full pipeline at 1 m/block   -> out/unbc_1m/*.schem
 make viewer         # interactive viewer at http://127.0.0.1:8765/
+```
+
+Starting from the `.rvt` instead of an IFC (no Revit needed):
+
+```sh
+make parser-setup   # check out parsers/reviter + install its deps (run once)
+make parser-check   # preflight, needs no model
+make rvt RVT="UNBC Model ... .rvt"
 ```
 
 That's it. See **[PIPELINE.md](PIPELINE.md)** for how it works, the block-mapping
@@ -27,7 +42,9 @@ table, functional doors, per-stage reference, and Minecraft import instructions.
 
 | Path | What |
 |---|---|
-| `scripts/pipeline.py` | one-command end-to-end driver |
+| `parsers/reviter` | **the parser** — Reviter, a clean-room RVT decoder, as a pinned submodule |
+| `scripts/rvt_to_ifc.py` | stage 0: RVT → IFC through the parser, gated by the contract check |
+| `scripts/pipeline.py` | one-command end-to-end driver (accepts `.rvt` or `.ifc`) |
 | `scripts/ifc_to_voxels.py` | the engine: IFC → voxels (semantic + functional doors) |
 | `scripts/blocks_to_minecraft.py` | voxels → `.schem` / `.litematic` (block-state aware) |
 | `scripts/export_web.py`, `web/` | interactive Three.js viewer |
@@ -66,19 +83,33 @@ npm run dev        # or: pnpm dev
 
 ## Step 0: getting an IFC from the RVT
 
-RVT is Autodesk's proprietary format; open-source tooling can't read it directly.
-Export it to IFC first (then this pipeline takes over):
+RVT is Autodesk's proprietary format; open-source tooling can't read it directly,
+so something has to produce an IFC before this pipeline takes over.
+
+**The built-in route** is [Reviter](https://github.com/ahzs645/reviter), pinned
+as a submodule at `parsers/reviter` — a clean-room RVT decoder that reads the
+model natively and writes IFC4, no licence involved. It is built on the same
+UNBC sources as this repository. `make rvt` runs it and hands the result to the
+pipeline; `scripts/pipeline.py` also takes a `.rvt` directly.
+
+Other routes, all of which produce an IFC this pipeline reads the same way:
 
 - **Revit desktop** — open the RVT, make a clean 3-D view, *Export → IFC*
   (IFC2x3 Coordination View is fine). Best option if you have Revit.
 - **Autodesk Platform Services** — Model Derivative / Design Automation can
   export IFC in the cloud (needs APS credentials).
 - **ODA / commercial converters** — can read RVT without Revit.
-- **[Reviter](https://github.com/ahzs645/reviter)** — a clean-room RVT decoder that
-  reads the model natively and writes IFC4, no licence involved. It is built on
-  the same UNBC sources as this repository. See **[REVITER.md](REVITER.md)** for
-  the transformation chain, what the voxel engine reads out of an IFC, and which
-  of it a Reviter export supplies today.
+
+Whichever you use, grade the result before converting it — the engine reads IFC
+*semantics*, and a file missing them converts without error into a subtly
+unwalkable world:
+
+```sh
+make contract IFC="model.ifc"      # or: python3 scripts/check_ifc_contract.py model.ifc
+```
+
+**[REVITER.md](REVITER.md)** has the frame-by-frame transformation chain, the
+full input contract, and how the parser/interpreter split is wired.
 
 IFC is the right interchange format here because it preserves *what each element
 is* (wall vs. glazing vs. door vs. slab) — which is exactly what drives the

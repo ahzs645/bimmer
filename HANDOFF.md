@@ -21,6 +21,21 @@ renderers, and docs.
 | `REVITER.md` | anything about where the IFC comes from: the RVT→IFC→voxel transformation chain, the engine's input contract, and the Reviter (licence-free RVT decoder) join |
 | `RENDERERS.md` / `BLOCKCRAFT.md` | the two web renderers and the Pages layout |
 
+## Where the IFC comes from
+
+`parsers/reviter` is a pinned git submodule holding **the parser** — a
+clean-room RVT decoder — and this repo is **the interpreter**. They meet
+at a file-level contract, not at code: `scripts/rvt_to_ifc.py` runs the
+parser's CLI and grades its output with `check_ifc_contract.py`, and
+nothing here imports its TypeScript. `make parser-setup` once, then
+`make rvt RVT=...` runs the whole chain from the proprietary format.
+
+Both halves are verifiable without the 67 MB model
+(`rvt_to_ifc.py --self-test`, `check_ifc_contract.py --self-test`); what
+neither establishes is whether the parser recovers *this* building
+correctly. REVITER.md §3 is the measured answer, and its §4 is the
+ranked work.
+
 ## The two builds
 
 ```sh
