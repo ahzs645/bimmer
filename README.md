@@ -51,6 +51,8 @@ table, functional doors, per-stage reference, and Minecraft import instructions.
 | `scripts/render_voxels.py` | static iso / plan / elevation PNG previews |
 | `scripts/inspect_ifc.py` | fast structural probe of an IFC |
 | `scripts/check_ifc_contract.py` | does this IFC carry what the engine reads? (gate a model before converting it) |
+| `scripts/rectify.py` | Phase-1 plan rectification: which wings sit off the grid, and the rigid motion that squares each one |
+| `scripts/preview_rectify.py` | see that rectification as a before/after plan, from wall placements alone (seconds, no conversion) |
 | `renderers/mcweb/` | export the building to a Java world save for the **minecraft-web-client** renderer (real doors/stairs/slabs/fences) |
 | `Makefile` | `setup` / `p1` / `p05` / `all` / `viewer` / `clean` |
 | **[HANDOFF.md](HANDOFF.md)** | **start here to continue this work**: current audited state, known residuals, ranked backlog, and the traps that already bit us |

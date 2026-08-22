@@ -71,6 +71,17 @@ unwalkable. This gate names what is missing and what it will do to the
 world, in seconds, without meshing. `--self-test` runs it against
 synthetic producers with no model needed. See REVITER.md.
 
+## Before trusting a rectified build, look at it
+
+```sh
+make rectify-preview IFC="<model.ifc>"
+```
+
+`--rectify` moves whole wings, and the only way to see that used to be
+converting twice. The wing computation reads wall placements only, so
+`preview_rectify.py` runs the same function the engine runs and draws a
+before/after plan in seconds. `--self-test` needs no model. RECTIFY.md.
+
 ## After ANY engine change, run this
 
 ```sh

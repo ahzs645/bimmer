@@ -94,6 +94,35 @@ plus the per-door two-sided walkability probe. Rectification that breaks a
 door slides it along its wall to the nearest valid column (GDMC-style
 validity rule) rather than deleting it.
 
+## Looking at it before converting
+
+```sh
+make rectify-preview IFC="model.ifc"
+# or: python3 scripts/preview_rectify.py model.ifc --svg out/r.svg --json out/wings.json
+python3 scripts/preview_rectify.py --self-test    # needs no model
+```
+
+Rectification is the one stage that visibly moves the building, and for a long
+time the only way to see it was to convert twice and compare two worlds — about
+forty minutes to answer "which wings did it find, and where do they land".
+
+It never needed to be. `compute_wing_transforms` reads IFC wall **placements**
+and nothing else: no geometry, no meshing. `preview_rectify.py` runs the
+identical function the engine runs and draws the answer as a before/after plan —
+each wing in its own colour, the on-grid spine in grey — plus the per-wing
+rotation, pivot, shove, and the count of wing walls within 2 m of the spine
+before and against after. Its `--json` is the same `wing_records` shape
+`--rectify` writes into `summary.json`, so a preview and a real build compare
+field by field.
+
+Membership is a convex-hull test, which is worth knowing when reading the
+picture: an axis-aligned wall that happens to sit inside a wing's hull belongs
+to that wing and moves with it. Grey dots inside a coloured cloud are not
+mistakes.
+
+The preview covers Phase 1 only. Seam stitching runs later against the voxel
+grid and cannot be known from placements.
+
 ## Status: Phase 1 is implemented (`--rectify`)
 
 `scripts/ifc_to_voxels.py --rectify` runs the whole recipe above at extract

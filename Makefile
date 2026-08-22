@@ -13,7 +13,8 @@ PY    := .venv/bin/python
 WORLD ?= out/unbc_1m
 MCWEB_WORLD ?= $(WORLD)
 
-.PHONY: help setup parser-setup parser-check contract p1 p05 all voxels rvt \
+.PHONY: help setup parser-setup parser-check contract rectify-preview \
+        p1 p05 all voxels rvt \
         viewer mcweb blockcraft blockcraft-static blockcraft-stop clean
 
 help:
@@ -29,6 +30,7 @@ help:
 	@echo "  make parser-check      preflight the parser (needs no model)"
 	@echo "  make rvt               RVT=$(RVT) straight through to a world"
 	@echo "  make contract          grade IFC=... against what the engine reads"
+	@echo "  make rectify-preview   see what --rectify would do to IFC=..., in seconds"
 	@echo ""
 	@echo "Renderer dev servers (all load WORLD=$(WORLD); override with WORLD=out/unbc_0p5m):"
 	@echo "  make viewer            Three.js inspection viewer      http://127.0.0.1:8765/"
@@ -62,6 +64,12 @@ parser-check:
 
 contract:
 	$(PY) scripts/check_ifc_contract.py "$(IFC)"
+
+# What --rectify would do, from wall placements alone: seconds, not the ~40
+# minutes a full conversion takes to answer the same question.
+rectify-preview:
+	$(PY) scripts/preview_rectify.py "$(IFC)" \
+	  --svg out/rectify-preview.svg --json out/rectify-preview.json
 
 # Stage 0 + the whole pipeline, from the proprietary format.
 rvt:
