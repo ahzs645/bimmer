@@ -255,12 +255,14 @@ work rather than by which repository it lives in.
 
 ### Two things this does *not* solve
 
-**Terrain.** The RVT retains 30 DWG filenames but no payloads, and the drawings
-themselves — the Drive folder's *UNBC Floorplan* — are per-storey plans and a
-whole-building underlay by their names, plus one roof. They are plan geometry,
-not a ground surface. Backlog item 2 (stamp a continuous ground surface by
-interpolating from ground-door sills and the building underside) remains the
-route, and the ~147 exterior doors facing a drop (D9) stay until it is built.
+**Terrain.** The RVT retains **30 DWG filenames and no payloads**, so the CAD
+underlays are not recoverable from the model; the Drive folder has a *UNBC
+Floorplan* folder that plausibly holds them, which is worth checking. Either
+way the retained names are per-storey plans, one roof, and a whole-building
+underlay — plan geometry, not a ground surface. Backlog item 2 (stamp a
+continuous ground surface by interpolating from ground-door sills and the
+building underside) remains the route, and the ~147 exterior doors facing a
+drop (D9) stay until it is built.
 
 **A second building.** Every threshold in Reviter and every rounding rule here
 is fitted to this one model. Joining the two projects doubles the tooling on one
