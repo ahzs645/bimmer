@@ -18,6 +18,7 @@ renderers, and docs.
 | `ASSUMPTIONS.md` | you wonder whether behaviour X is a bug or a documented 1 m-voxel tradeoff |
 | `RECTIFY.md` | anything about `--rectify` (wing rotation, push-apart, seam stitching, collision numbers) |
 | `PRIOR_ART.md` | before researching alternatives — surveys exist for IFC→Minecraft, voxel escape-route analysis, and hole-filling |
+| `REVITER.md` | anything about where the IFC comes from: the RVT→IFC→voxel transformation chain, the engine's input contract, and the Reviter (licence-free RVT decoder) join |
 | `RENDERERS.md` / `BLOCKCRAFT.md` | the two web renderers and the Pages layout |
 
 ## The two builds
@@ -41,6 +42,19 @@ Current audited state (2026-07, `scripts/audit_walkability.py`):
 rectified is a one-line change in `.github/workflows/pages.yml`
 (which snapshot gets committed) — it is a product decision, since
 rectification visibly moves wings.
+
+## Before converting an IFC you have not converted before
+
+```sh
+python3 scripts/check_ifc_contract.py <model.ifc>
+```
+
+The engine reads IFC *facts* — product class, `OverallWidth`, stair
+aggregation, host relationships — and every one of them fails silently
+when absent: the conversion succeeds and the building is subtly
+unwalkable. This gate names what is missing and what it will do to the
+world, in seconds, without meshing. `--self-test` runs it against
+synthetic producers with no model needed. See REVITER.md.
 
 ## After ANY engine change, run this
 
@@ -102,7 +116,18 @@ verifies itself.
    break the site on next deploy).
 8. **CI**: run `verify_blocks` + `audit_walkability` on a small fixture
    IFC in GitHub Actions (the TU Wien escape-route test models are
-   freely licensed fixtures — see PRIOR_ART).
+   freely licensed fixtures — see PRIOR_ART). `check_ifc_contract.py
+   --self-test` needs no fixture at all and can go in today.
+9. **Key `--overrides` on `Tag`, not just `GlobalId`** (REVITER.md §4).
+   Two IFC producers derive GlobalIds their own way, so a curated
+   overrides file matches nothing in another export of the same
+   building; both write the Revit element id into `Tag`. This is what
+   turns item 6 into an asset instead of a per-file artifact.
+10. **Join with Reviter** — a licence-free RVT→IFC4 path, and with it
+   the experiment neither project can run alone: the same building
+   through the same voxel engine from a native recovery and from
+   Autodesk's own exporter, differing only where the recovery differs.
+   Ranked plan in REVITER.md §4.
 
 ## Traps that bit us (do not rediscover these)
 
@@ -122,6 +147,11 @@ verifies itself.
   `&setting=enableLighting:false` for inspection shots. Headless
   Chromium here cannot reach the internet — serve mcraft.fun through a
   local curl-backed relay (see RENDERERS.md).
+- **Attribute names drift between IFC schemas**: `IfcStair`'s shape
+  enum is `ShapeType` in IFC2X3 and `PredefinedType` in IFC4, and
+  reading one spelling fails *silently* on the other — `getattr`
+  returns None and spiral synthesis just stops. The UNBC export is
+  IFC2X3; Reviter writes IFC4. Assume this is not the only rename.
 - **This dev container rolls back between sessions**: `git fetch +
   checkout -B <branch> origin/<branch>` before touching anything, and
   push every finished step. `out/` is disposable; rebuild it.

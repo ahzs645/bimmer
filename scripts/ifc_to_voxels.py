@@ -125,6 +125,20 @@ def class_for(ifc_type: str) -> str:
     return SEMANTIC_CLASSES.get(ifc_type, "other")
 
 
+def stair_shape(stair) -> str | None:
+    """The stair's shape enum, whichever schema the file speaks.
+
+    IFC2X3 calls it `ShapeType`; IFC4 renamed it `PredefinedType` with the same
+    enumerators. Reading only `ShapeType` looks harmless -- getattr returns
+    None and the loop skips -- but on an IFC4 file it silently disables spiral
+    synthesis for EVERY spiral stair in the model, and the artifact (a jumpy
+    wall-pinched blob in the stairwell) reads as a voxelization limit rather
+    than a missed branch. The UNBC Autodesk export is IFC2X3; Reviter writes
+    IFC4, so both spellings reach this engine.
+    """
+    return getattr(stair, "ShapeType", None) or getattr(stair, "PredefinedType", None)
+
+
 def compute_wing_transforms(model, min_family=250, eps=9.0, min_wing=60):
     """Phase-1 plan rectification: find off-grid WINGS and how to square them.
 
@@ -244,7 +258,13 @@ def compute_wing_transforms(model, min_family=250, eps=9.0, min_wing=60):
     return wings
 
 
-def wing_for_point(wings, x, y, margin=2.5):
+# How far outside a wing's convex hull an element still counts as that wing's.
+# Elements straddle the hull edge (a wall's mesh reaches past the placement
+# points the hull was built from), so a bare hull under-claims the boundary.
+WING_HULL_MARGIN_M = 2.5
+
+
+def wing_for_point(wings, x, y, margin=WING_HULL_MARGIN_M):
     for w in wings:
         if all(e[0] * x + e[1] * y + e[2] <= margin for e in w["eqs"]):
             return w
@@ -261,6 +281,33 @@ def apply_wing(w, v):
     out[:, 0] = px + c * dx - s * dy + tx
     out[:, 1] = py + s * dx + c * dy + ty
     return out
+
+
+def wing_records(wings):
+    """The rectification transforms, in a form a consumer can replay.
+
+    Without this the rectified world is a one-way trip. Every other stage of
+    the conversion is recorded -- `world_bounds_min_m` and `origin_shift_xyz`
+    let anyone map an IFC coordinate to a blocks.csv cell -- but `--rectify`
+    inserts a per-wing rigid motion that only ever reached stdout, so a cell in
+    a rectified build could not be traced back to the element it came from.
+    That blocks the two things rectification is for: comparing a rectified
+    build against the faithful one element by element, and RECTIFY Phase 3's
+    parametric opening replay, which has to know where a wall moved.
+
+    `eqs` are the wing hull's half-planes in source metres (a point is in the
+    wing when every `e[0]*x + e[1]*y + e[2] <= margin`), so the assignment
+    itself replays too, not just the motion.
+    """
+    return [{
+        "walls": int(w["n"]),
+        "rotation_deg": float(w["deg"]),
+        "pivot_xy_m": [float(w["pivot"][0]), float(w["pivot"][1])],
+        "shift_xy_m": [float(w.get("shift", (0.0, 0.0))[0]),
+                       float(w.get("shift", (0.0, 0.0))[1])],
+        "hull_half_planes": [[float(c) for c in row] for row in w["eqs"]],
+        "hull_margin_m": WING_HULL_MARGIN_M,
+    } for w in wings]
 
 
 def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
@@ -280,7 +327,7 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
     spiral_part_of: dict[int, int] = {}
     if spiral_mode == "synth":
         for st in model.by_type("IfcStair"):
-            if getattr(st, "ShapeType", None) != "SPIRAL_STAIR":
+            if stair_shape(st) != "SPIRAL_STAIR":
                 continue
             for rel in st.IsDecomposedBy or []:
                 for obj in rel.RelatedObjects:
@@ -2228,6 +2275,26 @@ def main() -> None:
         "fences_connected": fences_connected,
         "world_bounds_min_m": grid["all_min"].tolist(),
         "model_size_m_xyz": (grid["dims"] * args.pitch).tolist(),
+        # The whole forward map, written down once so a consumer never has to
+        # rediscover it from the source. Everything needed to place an IFC
+        # coordinate in this world -- and, with `wings`, to undo a rectified
+        # build back to model space -- is in this block.
+        "voxel_transform": {
+            "world_metres_to_blocks_csv": (
+                "g = round((p_metres - world_bounds_min_m) / pitch_m); "
+                "blocks.csv row = [g.x, g.z, -g.y] - origin_shift_xyz"
+            ),
+            "note": (
+                "The y<->z swap negates the swapped horizontal axis: a bare "
+                "swap is orientation-reversing and would mirror the model "
+                "north<->south. IFC +Y is North, which is Minecraft -Z."
+            ),
+            "pitch_m": args.pitch,
+            "world_bounds_min_m": grid["all_min"].tolist(),
+            "wings_applied_before_voxelization": bool(wings),
+        },
+        # Present and empty on a faithful build; populated by --rectify.
+        "wings": wing_records(wings) if wings else [],
         **ex_stats,
         "per_class_voxels": per_class,
         **write_stats,

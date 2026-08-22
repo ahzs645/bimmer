@@ -33,10 +33,12 @@ table, functional doors, per-stage reference, and Minecraft import instructions.
 | `scripts/export_web.py`, `web/` | interactive Three.js viewer |
 | `scripts/render_voxels.py` | static iso / plan / elevation PNG previews |
 | `scripts/inspect_ifc.py` | fast structural probe of an IFC |
+| `scripts/check_ifc_contract.py` | does this IFC carry what the engine reads? (gate a model before converting it) |
 | `renderers/mcweb/` | export the building to a Java world save for the **minecraft-web-client** renderer (real doors/stairs/slabs/fences) |
 | `Makefile` | `setup` / `p1` / `p05` / `all` / `viewer` / `clean` |
 | **[HANDOFF.md](HANDOFF.md)** | **start here to continue this work**: current audited state, known residuals, ranked backlog, and the traps that already bit us |
 | **[PIPELINE.md](PIPELINE.md)** | full design + usage docs |
+| **[REVITER.md](REVITER.md)** | RVT → voxels **without Revit**: the frame-by-frame transformation chain, the engine's IFC input contract, and what a native RVT recovery supplies today |
 | **[BLOCKCRAFT.md](BLOCKCRAFT.md)** | walk the building in a browser (BlockCraft, flat world) |
 | **[RENDERERS.md](RENDERERS.md)** | the two walkable browser renderers compared (BlockCraft vs minecraft-web-client) |
 | **[LESSONS.md](LESSONS.md)** | failure catalog (doors/stairs/railings): symptom → root cause → fix, the verification workflow, player behaviour, open items |
@@ -72,6 +74,11 @@ Export it to IFC first (then this pipeline takes over):
 - **Autodesk Platform Services** — Model Derivative / Design Automation can
   export IFC in the cloud (needs APS credentials).
 - **ODA / commercial converters** — can read RVT without Revit.
+- **[Reviter](https://github.com/ahzs645/reviter)** — a clean-room RVT decoder that
+  reads the model natively and writes IFC4, no licence involved. It is built on
+  the same UNBC sources as this repository. See **[REVITER.md](REVITER.md)** for
+  the transformation chain, what the voxel engine reads out of an IFC, and which
+  of it a Reviter export supplies today.
 
 IFC is the right interchange format here because it preserves *what each element
 is* (wall vs. glazing vs. door vs. slab) — which is exactly what drives the
