@@ -215,8 +215,8 @@ validation of 2026-08-02.
 |---|---|---|---|
 | Z-up, metres, valid IFC | yes | yes; IfcOpenShell and web-ifc both read it, `ifcopenshell.validate --rules` clean | — |
 | Typed products | typed | typed; **571** `IfcBuildingElementProxy` (1.5%) fall to `other` | low |
-| **Stair aggregation** | present | **absent** — spatial `IfcRelAggregates` only | **critical** |
-| Spiral stair enum | `ShapeType` | `PredefinedType` (engine now reads both) | fixed |
+| **Stair aggregation** | present | **now written** — `IfcRelAggregates` per assembly, onto a representation-less `IfcStair` where the wrapper has no body | closed |
+| Spiral stair enum | `ShapeType` | `PredefinedType`, but always `.NOTDEFINED.` — the recovery does not declare a stair's shape | medium |
 | `OverallWidth` | Revit's own parameter | `max(bbox.width, bbox.depth)` — a diagonal, not a width | medium |
 | Door bodies | native | 1,921 doors, **100.0% centre / 99.9% size** on the half-foot overlay | low |
 | Floor plates | 107 tagged slabs | **94** slabs; "floor/landing recovery remains incomplete" | high |
@@ -225,16 +225,42 @@ validation of 2026-08-02.
 | `GlobalId` | Autodesk-derived | Reviter-derived — **the two do not match** | medium |
 | Geometry provenance | not declared | declared per element: 84.3% native, 8.5% reconstructed, **7.2% (2,797) bounds fallback** | see below |
 
-**Stair aggregation is the one that matters most.** Three engine passes key on
-`element.Decomposes` and all three degrade silently without it: an `IfcMember`
-inside a stair is a stringer and not a mullion (LESSONS S5); overlapping
-assembly bounding boxes merge into one stairwell before the climb test (S3); and
-`SPIRAL_STAIR` flights are routed to the synthesiser instead of the merged stair
-class. A file with 108 flights and no containers passes every geometric check
-and produces stairwells the walkability audit reports as isolated. Reviter's
-2026-08-02 note calls wrapper aggregation something that "can be added later
-without changing visible geometry" — true of the *picture*, and the exact
-opposite of true for a world you have to walk through.
+**Stair aggregation was the one that mattered most, and it is now written.**
+Three engine passes key on `element.Decomposes` and all three degraded silently
+without it: an `IfcMember` inside a stair is a stringer and not a mullion
+(LESSONS S5); overlapping assembly bounding boxes merge into one stairwell
+before the climb test (S3); and `SPIRAL_STAIR` flights are routed to the
+synthesiser instead of the merged stair class. A file with 108 flights and no
+containers passes every geometric check and produces stairwells the walkability
+audit reports as isolated. Reviter's 2026-08-02 note calls wrapper aggregation
+something that "can be added later without changing visible geometry" — true of
+the *picture*, and the exact opposite of true for a world you have to walk
+through.
+
+Reviter now joins the tree from the run frames (each names its parent and its
+stringers) and the `Stairs` element frame (which names the railings and
+supports), and exports one `IfcRelAggregates` per assembly. The container
+carries no representation, so it adds no voxels — the parts already draw the
+stair.
+
+Measured on a three-element fixture through this engine, with the single
+`IfcRelAggregates` line removed as the control:
+
+| | `solid_faces_by_class` | `per_class_voxels` |
+|---|---|---|
+| with the aggregate | `stair: 2, railing: 1` | `stair: 3, railing: 3` |
+| without it | `stair: 1, frame: 1, railing: 1` | `stair: 3, frame: 3, railing: 3` |
+
+The stringer moves out of curtain-wall frame and into the stair class, which is
+the S5 artifact appearing and disappearing on one line of IFC.
+
+**And `blocks_by_id` is identical in both runs** — worth dwelling on, because it
+is the trap HANDOFF warns about in its general form. At 1 m the stringer
+occupies the same cells as its flight, and `CLASS_PRIORITY` puts stair above
+frame, so the final block list hides the error behind an overlap. A stringer
+running clear of its flight would render as curtain-wall concrete with the block
+histogram still looking correct. `solid_faces_by_class` sees it; `blocks_by_id`
+does not. Do not regression-test this class of bug on the block list.
 
 **The 2,797 bounds fallbacks need grading, not a percentage.** An
 axis-aligned box is nearly harmless for a wall, because a wall *is* a box. It is
@@ -268,14 +294,16 @@ work rather than by which repository it lives in.
    it converts "the contract" from prose into a number for the one file that is
    known to work. Everything below is graded against it.
 
-2. **Reviter: emit `IfcRelAggregates` for stairs.** The tree is already
-   decoded — `Revit2027StairsElementAggregate` carries `runAndLandingIds`,
-   `registeredRailingIds` and `supportIds`, and
-   `Revit2027StairsRunAndLandingAggregate` carries `stringerIds` and its parent
-   `stairsId`. `convert-element-geometry.ts` reads it and drops it: it never
-   reaches `ConvertResult`, so the exporter cannot see it. Surfacing it and
-   writing one `IfcRelAggregates` per assembly is the single change that moves
-   the most, and it costs no new decoding.
+2. ~~**Reviter: emit `IfcRelAggregates` for stairs.**~~ **Done** —
+   `lib/reviter/stair-assemblies.ts`, published on
+   `ConvertResult.nativeStairAssemblies`. It needed no new decoding: the tree
+   was decoded to place run geometry and dropped before anything could publish
+   it. What remains from this item is the stair *shape*. `PredefinedType` is
+   `.NOTDEFINED.`, so spiral synthesis still cannot fire on a Reviter IFC. The
+   evidence exists — a run recovered by `revit-2027-spiral-stair-mesh` is a
+   spiral by construction, because that replay only succeeds against matching
+   inner/outer helix guides — but that decoder's identity does not reach the
+   export manifest. Carrying it there is the work, and it is small.
 
 3. **Reviter: derive `OverallWidth` from the host wall, not the bounding box.**
    `max(width, depth)` of an AABB is the larger horizontal extent, which for a

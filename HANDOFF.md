@@ -166,6 +166,12 @@ verifies itself.
   shapes, door halves/hinges must be baked into block states at export.
 - **Stats can share the bug's blind spot**: the door-hoisting bug passed
   its own metric. Verify with the independent audits + in-client walks.
+- **`blocks_by_id` cannot see a misclassification that overlaps**: a
+  stringer wrongly classed as curtain-wall frame occupies the same
+  cells as its flight at 1 m, and `CLASS_PRIORITY` puts stair above
+  frame, so the block histogram is byte-identical either way.
+  `solid_faces_by_class` and `per_class_voxels` in summary.json show
+  it. Measured on the stair-aggregate fix; see REVITER.md §3.
 - **In-client screenshot harness quirks**: only the FIRST teleport per
   page session is reliable (use one browser context per viewpoint), the
   player can fall through unloaded chunks at distant teleports (wait
