@@ -355,6 +355,56 @@ Only the first flight differs, by two blocks in z. Walked side by side in
 That is the join working end to end: a proprietary format read without
 Autodesk, written as IFC4, and walked up the same stairs.
 
+### 2e. And rectified, too
+
+`--rectify` had only ever been run on the Autodesk export. It reads wall
+footprints, and the two producers present those completely differently: the
+export gives per-element `IfcLocalPlacement`s, the recovery bakes world
+coordinates into one shared placement, so `wall_plan` falls back to reading the
+footprints out of the tessellation (§1). Run on both:
+
+| | Autodesk export | Reviter recovery |
+|---|---|---|
+| walls read | 14,902, from placements | 7,462, from tessellation |
+| axis-aligned | 65% | 64% |
+| wings found | **6**: four +32, one -58, one -5 | **6**: four +32, one -58, one -5 |
+| knocked off the grid | 523 | 214 |
+| clashing after the move | 104 | 60 |
+| seams pulled open | 89 | 70 |
+
+Same count, same three angle families, from a decoder that shares no code with
+the exporter. Both files place the building in the same frame (identical world
+bounds to 0.1 m), so the seam pivots are directly comparable: three agree within
+7 m and a fourth within 17. Two do not, and the larger disagreement is
+informative — the **-58 degree wing** is 337 walls in the export and 51 in the
+recovery, which is the same wing that leaks worst in a rectified Autodesk build.
+`docs/confirm_rectify_both_decoders.png` is the two plans side by side.
+
+Converted all the way through:
+
+| | Autodesk `--rectify` | Reviter `--rectify` |
+|---|---:|---:|
+| interior reachable | 35,054 / 38,924 = **90.1%** | 35,327 / 39,601 = 89.2% |
+| cut off (largest pocket) | **3,870** (1,376) | 4,274 (779) |
+| holes in the envelope | **390** | 526 |
+| sees straight out | **845 (2.4%)** | 949 (2.7%) |
+| outdoor reachable / openings | 29,770 / 169 | **23,421** / 171 |
+| stairwells / turning / ISOLATED | **47 / 18 / 2** | 45 / 12 / 3 |
+| seam-wall cells | 1,147 | 935 |
+
+The recovery is the cleaner world faithful and the slightly worse one rectified
+— it gives the wing finder half as many walls to cluster, so its seams are
+looser. Nothing about the path breaks: **the 16-rise switchback survives
+rectification in the recovered model too**, at (195, 59), walking 17 stand cells
+with x reversing at y=5 and y=10 and y never dropping.
+
+> Checked with the **plan renderer in this repo**, `preview_rectify`, pointed at
+> the recovered IFC. Reviter's own Studio viewer draws the RVT recovery in
+> three.js and has no notion of an IFC or of a wing transform, so it cannot show
+> a rectified model as it stands; applying the wing transforms to the geometry
+> `scripts/extract-geometry.ts` emits would put it in that viewer, and is a
+> self-contained change on the Reviter side if it is wanted.
+
 The pin has since been moved onto the branch carrying both fixes (§0).
 
 ## 3. Where a Reviter export stands today

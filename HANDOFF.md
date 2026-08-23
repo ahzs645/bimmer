@@ -279,6 +279,7 @@ Every one of these was a number first, and looking changed two of them:
 | `docs/confirm_isolated_stair.png` | one flight was unreachable, and why | its bottom tread looking east at open sky, then the same flight with its landing back |
 | `docs/confirm_reviter_same_stair.png` | the clean-room decoder recovers the same building | that switchback walked in both worlds; 11 of 16 stand cells are the same cell (REVITER §2d) |
 | `docs/confirm_seam_walls.png` | the seam walls close the tear and nothing else | all 1,147 added cells in plan, tracing the wing hull boundaries |
+| `docs/confirm_rectify_both_decoders.png` | rectification is not an artefact of one exporter | the same six wings squared, from Autodesk placements and from recovered tessellation (REVITER §2e) |
 
 `make confirm WORLD=out/unbc_1m` regenerates all of them from a build.
 
@@ -286,14 +287,22 @@ Every one of these was a number first, and looking changed two of them:
 
 At 1 m, after the fixes above:
 
-| | Autodesk faithful | Reviter faithful | Autodesk `--rectify` |
-|---|---:|---:|---:|
-| interior reachable | 36,813 / 39,409 = 93.4% | 36,794 / 39,190 = **93.9%** | 35,054 / 38,924 = 90.1% |
-| cut off (largest pocket) | 2,596 (362) | **2,396 (77)** | 3,870 (1,376) |
-| holes in the envelope | 841 | 535 | **390** |
-| sees straight out | 603 (1.6%) | **533 (1.4%)** | 845 (2.4%) |
-| outdoor reachable / openings | 29,760 / 182 | **26,310 / 149** | 29,770 / 169 |
-| stairwells / turning / ISOLATED | 47 / 19 / **0** | 47 / 14 / 1 | 47 / 18 / 2 |
+| | Autodesk faithful | Reviter faithful | Autodesk `--rectify` | Reviter `--rectify` |
+|---|---:|---:|---:|---:|
+| interior reachable | 36,813 / 39,409 = 93.4% | 36,794 / 39,190 = **93.9%** | 35,054 / 38,924 = 90.1% | 35,327 / 39,601 = 89.2% |
+| cut off (largest pocket) | 2,596 (362) | **2,396 (77)** | 3,870 (1,376) | 4,274 (779) |
+| holes in the envelope | 841 | 535 | **390** | 526 |
+| sees straight out | 603 (1.6%) | **533 (1.4%)** | 845 (2.4%) | 949 (2.7%) |
+| outdoor reachable / openings | 29,760 / 182 | 26,310 / 149 | 29,770 / 169 | **23,421** / 171 |
+| stairwells / turning / ISOLATED | 47 / 19 / **0** | 47 / 14 / 1 | 47 / 18 / 2 | 45 / 12 / 3 |
+| seam-wall cells | — | — | 1,147 | 935 |
+
+`--rectify` finds the **same six wings in both files** — four at +32
+degrees, one at -58, one at -5 — reading per-element placements from the
+export and footprints out of the tessellation from the recovery. The
+16-rise switchback survives rectification in both. REVITER §2e has the
+per-wing detail; `docs/confirm_rectify_both_decoders.png` is the two
+rectified plans side by side.
 
 ## After ANY engine change, run this
 
