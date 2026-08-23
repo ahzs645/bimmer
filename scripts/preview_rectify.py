@@ -50,7 +50,14 @@ SPINE = "#9a9a9a"
 
 
 def wall_plan(model):
-    """Every wall's plan position and angle, exactly as the engine reads them."""
+    """Every wall's plan position and true angle, read as the engine reads them.
+
+    The engine folds the angle to mod 90 because it is looking for grid
+    families, and two walls at 10 and 100 degrees belong to the same family.
+    They are not the same *wall*, though -- they are perpendicular -- so the
+    true angle is kept here and folded only where a family is wanted. Drawing
+    from the folded value would render every building as if it had no corners.
+    """
     from ifcopenshell.util import placement as _placement
 
     scale = ifcopenshell.util.unit.calculate_unit_scale(model)
@@ -61,8 +68,14 @@ def wall_plan(model):
         except Exception:
             continue
         points.append((float(matrix[0][3]) * scale, float(matrix[1][3]) * scale))
-        angles.append(math.degrees(math.atan2(matrix[1][0], matrix[0][0])) % 90.0)
+        angles.append(math.degrees(math.atan2(matrix[1][0], matrix[0][0])))
     return np.asarray(points, dtype=float), np.asarray(angles, dtype=float)
+
+
+def on_grid(angles):
+    """Which walls already sit on the voxel grid. The engine's own test."""
+    family = angles % 90.0
+    return (family < 3) | (family > 87)
 
 
 def move(wing, points):
@@ -104,56 +117,110 @@ def assign(wings, points):
     return owner
 
 
-def svg(points, owner, wings, path: Path, size: int = 900) -> None:
-    """A before/after plan, drawn as two panels sharing one scale."""
-    after = points.copy()
+def svg(points, angles, owner, wings, path: Path, long_edge: int = 1400) -> None:
+    """A before/after plan, drawn as oriented wall segments.
+
+    Two things the first version of this got wrong, both of which made it
+    useless at the size anyone actually views it:
+
+    - **A wall is a stick, not a dot.** Rectification is entirely about angle,
+      and a dot has none. Drawn as a short segment at its true plan angle, a
+      jagged 58-degree wing and an orthogonal one are told apart at a glance;
+      drawn as dots they are two identical grey clouds.
+    - **The panels are laid out along the model's short axis.** Side by side
+      is right for a tall building and halves the scale of a wide one. The
+      aspect ratio decides, so the drawing fills the canvas either way.
+    """
+    after_points = points.copy()
+    after_angles = angles.copy()
     for index, wing in enumerate(wings):
         rows = owner == index
         if rows.any():
-            after[rows] = move(wing, points[rows])
+            after_points[rows] = move(wing, points[rows])
+            after_angles[rows] = angles[rows] + wing["deg"]
 
-    both = np.vstack([points, after])
+    both = np.vstack([points, after_points])
     lo, hi = both.min(axis=0), both.max(axis=0)
     span = np.maximum(hi - lo, 1e-6)
-    pad = 24
-    panel = size - 2 * pad
-    # One scale for both panels: a rectification that moves a wing 40 m must
-    # not be flattered by each panel being fitted to its own extent.
-    scale = panel / max(span[0], span[1])
-    height = int(span[1] * scale) + 2 * pad
 
-    def place(xy, offset):
+    # `gap` has to clear the second panel's title, which is drawn above its
+    # own top edge; at 28 it sat on the first panel's bottom border.
+    pad, gap, header, footer = 20, 48, 34, 48
+    # Stack a wide model, sit a tall one side by side: either way the panels
+    # run along the model's LONG axis and the scale stays as large as it can.
+    stacked = span[0] >= span[1]
+    if stacked:
+        panel_w = long_edge - 2 * pad
+        scale = panel_w / span[0]
+        panel_h = span[1] * scale
+        width = long_edge
+        height = header + panel_h * 2 + gap + footer
+        offsets = [(pad, header), (pad, header + panel_h + gap)]
+    else:
+        panel_h = long_edge - header - footer
+        scale = panel_h / span[1]
+        panel_w = span[0] * scale
+        width = pad * 2 + panel_w * 2 + gap
+        height = long_edge
+        offsets = [(pad, header), (pad + panel_w + gap, header)]
+
+    # A wall drawn shorter than a few pixels is a dot again. Length is in world
+    # metres so it stays honest, floored so it stays visible.
+    stick_m = max(2.0, float(span.max()) / 90.0)
+    stroke = max(1.1, scale * 0.9)
+
+    def segments(data, data_angles, ox, oy):
+        radians = np.radians(data_angles)
+        half = stick_m / 2.0
+        dx, dy = np.cos(radians) * half, np.sin(radians) * half
+        x1 = ox + (data[:, 0] - dx - lo[0]) * scale
+        x2 = ox + (data[:, 0] + dx - lo[0]) * scale
         # SVG y grows downward; plan y grows north, so flip it.
-        return (offset + pad + (xy[:, 0] - lo[0]) * scale,
-                pad + (hi[1] - xy[:, 1]) * scale)
+        y1 = oy + (hi[1] - (data[:, 1] - dy)) * scale
+        y2 = oy + (hi[1] - (data[:, 1] + dy)) * scale
+        return x1, y1, x2, y2
 
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{2 * size + 40}" height="{height + 40}" '
-        f'viewBox="0 0 {2 * size + 40} {height + 40}">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0f}" height="{height:.0f}" '
+        f'viewBox="0 0 {width:.0f} {height:.0f}">',
         '<rect width="100%" height="100%" fill="#ffffff"/>',
-        '<style>text{font:14px system-ui,sans-serif;fill:#333}'
-        '.t{font-weight:600}</style>',
+        '<style>text{font:15px system-ui,-apple-system,sans-serif;fill:#444}'
+        '.t{font-size:17px;font-weight:650;fill:#111}</style>',
     ]
-    # A rule between the panels: without it two point clouds on one white field
-    # read as one drawing, and the whole point is comparing them.
-    parts.append(f'<line x1="{size + 20}" y1="6" x2="{size + 20}" y2="{height + 12}" '
-                 'stroke="#dcdcdc" stroke-width="1"/>')
-    for offset, data, title in ((0, points, "before"), (size + 40, after, "after --rectify")):
-        xs, ys = place(data, offset)
-        parts.append(f'<text class="t" x="{offset + pad}" y="18">{title}</text>')
+    panels = ((offsets[0], points, angles, "before"),
+              (offsets[1], after_points, after_angles, "after --rectify"))
+    for (ox, oy), data, data_angles, title in panels:
+        parts.append(f'<rect x="{ox:.0f}" y="{oy:.0f}" width="{panel_w:.0f}" '
+                     f'height="{panel_h:.0f}" fill="#fbfbfc" stroke="#e4e4e8"/>')
+        parts.append(f'<text class="t" x="{ox:.0f}" y="{oy - 9:.0f}">{title}</text>')
+        x1, y1, x2, y2 = segments(data, data_angles, ox, oy)
         for row in range(len(data)):
             colour = SPINE if owner[row] < 0 else WING_COLOURS[owner[row] % len(WING_COLOURS)]
-            parts.append(f'<circle cx="{xs[row]:.1f}" cy="{ys[row] + 20:.1f}" r="1.6" '
-                         f'fill="{colour}" fill-opacity="0.75"/>')
-    legend_y = height + 32
-    parts.append(f'<text x="{pad}" y="{legend_y}">grey: on-grid spine</text>')
+            parts.append(
+                f'<line x1="{x1[row]:.1f}" y1="{y1[row]:.1f}" x2="{x2[row]:.1f}" '
+                f'y2="{y2[row]:.1f}" stroke="{colour}" stroke-width="{stroke:.1f}" '
+                'stroke-linecap="round" stroke-opacity="0.85"/>')
+
+    # Advance by the label's *rendered* length: `&#176;` is six characters of
+    # markup and one degree sign on screen, so counting the source overshoots
+    # and the entries drift apart until the last one leaves the canvas.
+    def advance(label: str) -> float:
+        rendered = label.replace("&#176;", "\u00b0")
+        return 46 + 8.0 * len(rendered)
+
+    legend_y = height - 16
+    entries = [(SPINE, "on-grid spine")]
     for index, wing in enumerate(wings):
-        colour = WING_COLOURS[index % len(WING_COLOURS)]
         tx, ty = wing.get("shift", (0.0, 0.0))
-        shove = f", shove ({tx:+.0f},{ty:+.0f}) m" if (tx or ty) else ""
-        parts.append(
-            f'<text x="{pad + 190 + index * 230}" y="{legend_y}" fill="{colour}">'
-            f'wing {index + 1}: {wing["n"]} walls, {wing["deg"]:+.0f}&#176;{shove}</text>')
+        shove = f", shove ({tx:+.0f}, {ty:+.0f}) m" if (tx or ty) else ""
+        entries.append((WING_COLOURS[index % len(WING_COLOURS)],
+                        f'wing {index + 1}: {wing["n"]} walls, {wing["deg"]:+.0f}&#176;{shove}'))
+
+    cursor = float(pad)
+    for colour, label in entries:
+        parts.append(f'<text x="{cursor:.0f}" y="{legend_y:.0f}">'
+                     f'<tspan fill="{colour}" font-size="19">&#9644;</tspan> {label}</text>')
+        cursor += advance(label)
     parts.append("</svg>")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(parts), encoding="utf-8")
@@ -182,7 +249,7 @@ def main() -> int:
         raise SystemExit(f"{args.ifc.name} has no readable IfcWall placements; "
                          "nothing to rectify and nothing to preview.")
 
-    on_axis = (angles < 3) | (angles > 87)
+    on_axis = on_grid(angles)
     print(f"{len(points):,} walls; {on_axis.sum():,} axis-aligned "
           f"({on_axis.mean():.0%}), {(~on_axis).sum():,} off-grid")
 
@@ -224,7 +291,7 @@ def main() -> int:
 
     if not args.no_svg:
         out = args.svg or args.ifc.with_suffix(".rectify.svg")
-        svg(points, owner, wings, out)
+        svg(points, angles, owner, wings, out)
         print(f"wrote {out}")
     return 0
 
@@ -308,7 +375,7 @@ def self_test() -> int:
         points, angles = wall_plan(model)
         expect(len(points) == 600, f"fixture should hold 600 walls, read {len(points)}")
 
-        on_axis = (angles < 3) | (angles > 87)
+        on_axis = on_grid(angles)
         expect(int(on_axis.sum()) == 300,
                f"300 walls should read as axis-aligned, got {int(on_axis.sum())}")
 
@@ -336,12 +403,12 @@ def self_test() -> int:
                    f"({before_if_naive} -> {after} walls within 2 m)")
 
             out = tmp / "preview.svg"
-            svg(points, owner, wings, out)
+            svg(points, angles, owner, wings, out)
             text = out.read_text()
             expect(text.startswith("<svg") and text.rstrip().endswith("</svg>"),
                    "the SVG should be well formed")
-            expect(text.count("<circle") == 1200,
-                   f"both panels should draw all 600 walls, found {text.count('<circle')}")
+            expect(text.count("<line") == 1200,
+                   f"both panels should draw all 600 walls, found {text.count('<line')}")
             expect("before" in text and "after --rectify" in text,
                    "both panels should be labelled")
 
