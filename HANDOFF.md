@@ -170,6 +170,7 @@ Every one of these was a number first and turned out to need a frame:
 | `docs/confirm_stairs_bend.png` | stairwells turn as they rise | a 16-step switchback at (195, 63) walked end to end: x reverses at y=5 and y=10, y never drops |
 | `docs/confirm_envelope.png` | roof, hole, and the step between | sky in a box (a hole), a light well, and the two crossings the player walks out through |
 | `docs/confirm_isolated_stair.png` | one flight is unreachable | its bottom tread, looking east at open sky where the landing should be |
+| `docs/confirm_reviter_same_stair.png` | the clean-room decoder recovers the same building | that switchback walked in both worlds, x and y agreeing at every step (REVITER §2d) |
 
 `make confirm WORLD=out/unbc_1m` regenerates all of them from a build.
 

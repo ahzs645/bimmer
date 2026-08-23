@@ -68,7 +68,7 @@ IFC, and without the pin there is no way to tell which.
 
 ```sh
 git clone --recurse-submodules ...          # or: git submodule update --init
-git submodule update --remote parsers/reviter   # move to reviter/main's tip
+git submodule update --remote parsers/reviter   # move to the tracked branch's tip
 make parser-check && make contract IFC=...      # then re-grade before trusting it
 ```
 
@@ -77,14 +77,22 @@ again, re-run the contract gate, and diff the resulting world. A parser bump
 that changes the contract report is exactly the signal the pin exists to
 produce.
 
-> **The current pin predates the stair-assembly work.** It points at Reviter's
-> `main`, which does not yet write `IfcRelAggregates` for stairs (§3), so a
-> `make rvt` run today produces an IFC the contract gate fails on
-> `stair_aggregation` — correctly, and by design: the gate is doing its job.
-> The pin should move to Reviter's tip once that work lands on `main`, at which
-> point re-run `make contract` and diff the world. Pinning to an unmerged
-> branch instead would tie this repository to a ref that can be force-pushed or
-> deleted, which is the one thing a pin exists to prevent.
+> **The pin is on `claude/unbc-revit-voxel-transform-afvnju`, not `main`.**
+> It was on `main` (`ce465fb`), which does not write `IfcRelAggregates` for
+> stairs and measures door widths off an axis-aligned box, so `make rvt`
+> produced an IFC the contract gate **failed** — correctly, and on two defects
+> whose fixes exist on that branch (§2c). A pin that guarantees a failing
+> conversion is not protecting anything.
+>
+> The cost is stated rather than hidden: a submodule records a commit, and a
+> commit only stays fetchable while some ref reaches it, so this pin depends on
+> that branch not being force-pushed past `69eddf0` or deleted. Both
+> repositories develop on that branch for this project, so the exposure is
+> known and temporary.
+>
+> **When the branch merges**, set `branch = main` in `.gitmodules`, run
+> `git submodule update --remote parsers/reviter`, then `make contract` and
+> diff the world. The pin should be back on `main` the day it can be.
 
 ### What is checkable without the model
 
@@ -284,8 +292,8 @@ Four things this changes:
   argued. This is now the strongest evidence for that item, not the weakest.
 - **0 of 108 flights are aggregated**, as predicted. 23 `IfcStair` containers
   do reach the file, so the products exist; nothing relates them to their
-  flights. The fix on the Reviter branch targets exactly this, and the
-  submodule pin predates it.
+  flights. The fix on the Reviter branch targets exactly this; the submodule
+  pin predated it and has since been moved (see "Working with the pin").
 - **Only 1 of 2,797 bounds fallbacks lands in a walkability-critical class.**
   §3 treats those 2,797 as a risk needing grading; graded, they are almost
   entirely harmless here. That corrects the concern rather than confirming it.
@@ -314,7 +322,38 @@ principal axis rather than an axis-aligned box takes it to 9, **fewer than the
 Autodesk export's 35**. The recovery is now ahead of the exporter on that
 measure as well as on Tags and host relationships.
 
-The submodule pin still predates all of this (§0).
+### 2d. Both IFCs converted and walked, and they are the same building
+
+The contract gate reads an IFC. It does not say whether the world you get out
+of it is the same world. Both files converted at 1 m, faithful (no
+`--rectify`), and swept:
+
+| | Autodesk export | Reviter recovery |
+|---|---:|---:|
+| interior cells reachable | 36,813 | 36,794 |
+| interior cells standable | 39,409 | 39,190 |
+| share | 93.4% | **93.9%** |
+| cut off | 2,596 cells | **2,396** |
+| largest cut-off pocket | 362 cells | **77 cells** |
+| interior cells open to sky | 841 | **535** |
+| entrance cells | 2,133 | 2,160 |
+| stairwells / turning / ISOLATED | 48 / 21 / 2 | 47 / 14 / **1** |
+
+The recovery is not a degraded copy. On every row where the two differ by more
+than rounding, the recovery is the cleaner world — its worst stranded pocket is
+77 cells against 362, and it leaves 306 fewer interior cells looking at the sky.
+
+**And the staircase is the same staircase.** The 16-rise switchback the
+Autodesk build puts at (195, 63) is in the recovery at (195, 52): same x span,
+same rise, same facing sequence east x4 / west x4 / east x4 / west x2. Routed
+under vanilla physics both give 16 stand cells whose x and y agree at every
+single step; only z differs, because the two producers write the model against
+different origins (§1). Walked side by side in `docs/confirm_reviter_same_stair.png`.
+
+That is the join working end to end: a proprietary format read without
+Autodesk, written as IFC4, and walked up the same stairs.
+
+The pin has since been moved onto the branch carrying both fixes (§0).
 
 ## 3. Where a Reviter export stands today
 
