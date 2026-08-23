@@ -191,6 +191,33 @@ the 104 → 27 recorded below. Same direction, same rough halving, different
 denominators; the residual gap is the hull-membership correction and has not
 been chased further.
 
+### Converted, both ways, and what the percentage hides
+
+The real model at 1 m, faithful against `--rectify`:
+
+| | faithful | `--rectify` |
+|---|---:|---:|
+| interior cells reachable | 42,020 | **44,917** |
+| interior cells standable | 44,643 | 49,308 |
+| share | **94.1%** | 91.1% |
+| cut off | 2,623 in 10 pockets | 4,391 |
+| largest cut-off pocket | 362 cells | **1,143 cells** at (134, 13, 36) |
+| stair cubes refined / wells rebuilt | 460 / 30 | 489 / 31 |
+
+**Rectification reaches ~2,900 more interior cells and strands a 1,143-cell
+region the faithful build does not.** Both halves of that are real and the
+share alone reports neither: 94.1% against 91.1% reads as a regression, and it
+is a denominator effect — rectification opens up 4,665 more standable cells, so
+the reachable count rises while the fraction falls.
+
+Quote the counts, or quote both. A single percentage across two builds with
+different denominators is the same mistake as measuring wing clipping against a
+spine that moves with the wing.
+
+The 1,143-cell pocket is the actionable half, and it is new: it exists only in
+the rectified build, and until `inspect_interior.py` located it, the whole of it
+was hidden inside a three-point difference in a percentage.
+
 ### What it costs, per wall
 
 The report used to be entirely the case *for* rectification. Three costs are

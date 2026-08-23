@@ -293,6 +293,29 @@ Four things this changes:
   and 99.4% of openings resolve to a host against 94.2%. The recovery is ahead
   of the exporter on the relationships it does keep.
 
+## 2c. Both Reviter gaps closed, measured on the RVT
+
+The two blockers in §4 are implemented on Reviter's branch and run against the
+real RVT. The gate read each result:
+
+| | pinned parser | + stair aggregation | + door width | Autodesk |
+|---|---:|---:|---:|---:|
+| flights aggregated | **0 of 108** | 108 of 108 | 108 of 108 | 123 of 123 |
+| doors on a leaf boundary | 394 | 394 | **9** | 35 |
+| verdict | **FAIL** | WARN | WARN | WARN |
+
+Both are now WARN on `class_coverage` alone — 571 products (1.5%) still reach
+the file unclassified. That is the remaining item, and it is a category-recovery
+question rather than an export one.
+
+The door number is the surprise. 394 of 1,921 doors sat within a tenth of a cell
+of a `round(width / pitch)` boundary; reading the width off the footprint's own
+principal axis rather than an axis-aligned box takes it to 9, **fewer than the
+Autodesk export's 35**. The recovery is now ahead of the exporter on that
+measure as well as on Tags and host relationships.
+
+The submodule pin still predates all of this (§0).
+
 ## 3. Where a Reviter export stands today
 
 From Reviter's independent-reader run of 2026-08-19 (38,978 products, read back
