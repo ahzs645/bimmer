@@ -8,10 +8,11 @@ that no code in this repository produced.
 
 [**Reviter**](https://github.com/ahzs645/reviter) is a clean-room RVT decoder
 that reads the same building natively and writes IFC4. Both projects are built
-on the *same three files* — the [shared Drive
-folder](https://drive.google.com/drive/folders/1Dx_v2v6M1LI02E4sngLyoyVMdnohijLT)
-holds the 67 MB RVT, the 80 MB Autodesk IFC and a 25.6 MB Autodesk GLB, and
-Reviter's audits pin all three by SHA-256. They have never been joined.
+on the *same three files* — a 67 MB RVT, an 80 MB Autodesk IFC and a 25.6 MB
+Autodesk GLB, which Reviter's audits pin by SHA-256. The sources are not in
+either repository and are not linked from one: they are a third party's Revit
+project, shared privately, and this repository is public. Ask the maintainer
+for access.
 
 They are joined now: Reviter is pinned as a git submodule at
 `parsers/reviter`, and `scripts/pipeline.py` takes a `.rvt`. This document is
