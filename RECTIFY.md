@@ -197,17 +197,18 @@ The real model at 1 m, faithful against `--rectify`:
 
 | | faithful | `--rectify` |
 |---|---:|---:|
-| interior cells reachable | 42,020 | **44,917** |
-| interior cells standable | 44,643 | 49,308 |
-| share | **94.1%** | 91.1% |
-| cut off | 2,623 in 10 pockets | 4,391 |
-| largest cut-off pocket | 362 cells | **1,143 cells** at (134, 13, 36) |
-| stair cubes refined / wells rebuilt | 460 / 30 | 489 / 31 |
+| interior cells reachable | 36,813 | **39,765** |
+| interior cells standable | 39,409 | 43,972 |
+| share | **93.4%** | 90.4% |
+| cut off | 2,596 in 10 pockets | 4,207 |
+| largest cut-off pocket | 362 cells at (137, 13, 325) | **1,143 cells** at (134, 13, 36) |
+| interior cells open to sky | 841 | 1,828 |
+| outdoor cells reachable | 29,760 through 182 openings | 29,076 through 191 |
 
-**Rectification reaches ~2,900 more interior cells and strands a 1,143-cell
+**Rectification reaches ~2,950 more interior cells and strands a 1,143-cell
 region the faithful build does not.** Both halves of that are real and the
-share alone reports neither: 94.1% against 91.1% reads as a regression, and it
-is a denominator effect — rectification opens up 4,665 more standable cells, so
+share alone reports neither: 93.4% against 90.4% reads as a regression, and it
+is a denominator effect — rectification opens up 4,563 more standable cells, so
 the reachable count rises while the fraction falls.
 
 Quote the counts, or quote both. A single percentage across two builds with
@@ -216,7 +217,16 @@ spine that moves with the wing.
 
 The 1,143-cell pocket is the actionable half, and it is new: it exists only in
 the rectified build, and until `inspect_interior.py` located it, the whole of it
-was hidden inside a three-point difference in a percentage.
+was hidden inside a three-point difference in a percentage. Walked to, it is a
+furnished interior — walls, a ceiling, a lit corridor receding at 90 degrees —
+not a rounding sliver.
+
+Both columns are smaller than they were before `cap_envelope` learned the
+escape test (see HANDOFF, "Roof or hole"). The old rule capped 5,330 columns in
+the faithful build and 6,660 in the rectified one; the escape test caps 887 and
+1,513. The difference was roof invented over open terrace, complete with
+ceiling lanterns underneath it — which is also why the "interior" denominator
+shrank. The comparison between the two builds is unchanged by the fix.
 
 ### What it costs, per wall
 

@@ -14,7 +14,7 @@ WORLD ?= out/unbc_1m
 MCWEB_WORLD ?= $(WORLD)
 
 .PHONY: help setup parser-setup parser-check contract rectify-preview \
-        fixture fixture-recovery walk inspect p1 p05 all voxels rvt \
+        fixture fixture-recovery walk inspect confirm selftest p1 p05 all voxels rvt \
         viewer mcweb blockcraft blockcraft-static blockcraft-stop clean
 
 help:
@@ -37,6 +37,8 @@ help:
 	@echo "  make fixture-recovery  the same building shaped as an RVT recovery, both walked"
 	@echo "  make walk              first-person walkthrough of WORLD=$(WORLD)"
 	@echo "  make inspect           sweep the interior: cut-off pockets, leaks, stairs"
+	@echo "  make confirm           first-person frames for what inspect claims"
+	@echo "  make selftest          every engine self-test, no model needed"
 	@echo ""
 	@echo "Renderer dev servers (all load WORLD=$(WORLD); override with WORLD=out/unbc_0p5m):"
 	@echo "  make viewer            Three.js inspection viewer      http://127.0.0.1:8765/"
@@ -106,6 +108,23 @@ walk:
 # bend -- and a view from every region rather than one route.
 inspect:
 	$(PY) scripts/inspect_interior.py "$(WORLD)/blocks.csv" --out "$(WORLD)/inspect" --views 12
+
+# The same sweep, but rendering the CLAIMS: climb the stairwells that turn,
+# stand on the roof the player can reach, look up out of the holes, and look
+# out through the openings they escape by. Numbers have been wrong here in
+# ways only a frame showed.
+confirm:
+	$(PY) scripts/inspect_interior.py "$(WORLD)/blocks.csv" --out "$(WORLD)/confirm" \
+	  --views 4 --stair-views 6 --outside-views 4
+
+# Everything that can be checked without a model. Run before any push.
+selftest:
+	$(PY) scripts/ifc_to_voxels.py --self-test
+	$(PY) scripts/inspect_interior.py --self-test
+	$(PY) scripts/walk_voxels.py --self-test
+	$(PY) scripts/preview_rectify.py --self-test
+	$(PY) scripts/check_ifc_contract.py --self-test
+	$(PY) scripts/rvt_to_ifc.py --self-test
 
 # Stage 0 + the whole pipeline, from the proprietary format.
 rvt:

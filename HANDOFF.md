@@ -102,18 +102,82 @@ visible in a frame and invisible in a percentage.
 
 ```sh
 make inspect WORLD=out/fixture
+scripts/inspect_interior.py out/unbc/blocks.csv --out out/inspect \
+    --stair-views 4 --outside-views 4
 ```
 
 Locates the cut-off pockets rather than counting them, separates the
 roof from the interior (standing on the roof is standable and is not a
 storey at 0% reachable), reports interior cells with open sky above
-them, says how many outdoor cells the player can reach, and per
-stairwell says whether it bends, whether it is connected, and how many
-cells nothing else reaches. Writes a view from each region.
+them, locates every place the player crosses from indoors to outdoors,
+and per stairwell gives its position, its facing level by level, and how
+many turns that adds up to.
+
+**Say where, not how many.** Every number in that report was wrong once,
+and in each case the count looked reasonable while the location gave it
+away:
+
+- *"22 stairwells bend"* counted any well holding two facings, including
+  two straight flights that happened to touch. Read level by level, the
+  real building has 21 wells that turn as they rise (one of them four
+  half-flights through 16 levels) and 3 that hold two facings on a
+  single landing.
+- *"29,076 outdoor cells are reachable"* is a symptom with no fix
+  attached. Clustered into crossings it is 191 openings, and the largest
+  is 104 stand cells wide — a floor plate running out past its wall line,
+  not a hole someone left in a door.
+- *"holes in the envelope"* came from a rule that called a cell a hole
+  when 3 of its 8 neighbouring columns were taller. That is also true of
+  every cell along the foot of a tall wing, and the first-person views of
+  those "holes" showed the campus and the horizon. See below.
+- *"~2-3 stairwells per build are flagged ISOLATED, their floors served
+  by seam corridors"* was a guess, and wrong for the one that was looked
+  at. The 12-rise flight at (179, 228) is an exterior stair with no
+  landing plate at either end: every tread is standable, and the only
+  neighbour of the bottom tread is the tread above it. Walk to the bottom
+  and look east and there is nothing but sky
+  (`docs/confirm_isolated_stair.png`).
+
+## Roof or hole: decide it by escape
+
+Both are "a standable cell with open sky above it", and the same
+question is asked in two places — `inspect_interior.outdoors_by_escape`,
+and `ifc_to_voxels.cap_envelope`, which ADDS roof over what it decides
+is a hole. Two rules were tried and both broke on the real building:
+
+| rule | breaks on |
+| --- | --- |
+| by level — a level is outdoors when most of it is exposed | stepped roofs; called 53% of the interior holes |
+| by neighbour count — exposed, but 3 neighbouring columns are taller | the foot of every tall mass; roofed over open terrace |
+
+The rule now is **escape**: flood horizontally at the cell's own level
+through columns that nothing covers, and ask whether that flood reaches
+the edge of the model. Outdoors means you could leave without going
+under a roof. A light well cannot; a terrace beside a tower can. Both
+shapes are in `scripts/ifc_to_voxels.py --self-test`.
+
+On the real building the old rule capped **5,330** columns in the
+faithful build and **6,660** in the rectified one; the escape test caps
+**887** and **1,513**. The rest was roof invented over open terrace,
+with ceiling lanterns recessed into the underside of it.
+
+## The three claims, confirmed by looking
+
+Every one of these was a number first and turned out to need a frame:
+
+| figure | claim | what the frame shows |
+| --- | --- | --- |
+| `docs/confirm_stairs_bend.png` | stairwells turn as they rise | a 16-step switchback at (195, 63) walked end to end: x reverses at y=5 and y=10, y never drops |
+| `docs/confirm_envelope.png` | roof, hole, and the step between | sky in a box (a hole), a light well, and the two crossings the player walks out through |
+| `docs/confirm_isolated_stair.png` | one flight is unreachable | its bottom tread, looking east at open sky where the landing should be |
+
+`make confirm WORLD=out/unbc_1m` regenerates all of them from a build.
 
 ## After ANY engine change, run this
 
 ```sh
+.venv/bin/python scripts/ifc_to_voxels.py --self-test        # cap: light well vs terrace
+.venv/bin/python scripts/inspect_interior.py --self-test     # pockets, holes, dog-leg climb
 .venv/bin/python scripts/verify_blocks.py out/unbc_1m        # door/fence/stair QA
 .venv/bin/python scripts/audit_walkability.py out/unbc_1m/blocks.csv   # per-well climb + reachability
 renderers/mcweb/run.sh export out/unbc_1m/blocks.csv /tmp/w && node renderers/mcweb/verify_save.js /tmp/w
@@ -132,9 +196,13 @@ verifies itself.
   by wall rounding, ~100 free-standing in glazed facades, a handful of
   exterior doors still facing drops where no apron fit. A curated
   overrides JSON for the UNBC model would zero the visible ones.
-- **~2–3 stairwells per build flagged ISOLATED** by the well metric —
-  their floors are served by seam corridors; nothing player-relevant is
-  behind them. Fix would be per-well base linkage; low value.
+- **2 stairwells per build flagged ISOLATED** by the well metric. One
+  was walked: a 12-rise exterior flight at (179, 228) hanging in the air,
+  with no landing plate at either end, so its bottom tread's only
+  neighbour is the tread above it. Not a metric artifact and not served
+  by anything else — those treads are simply unreachable. Fix is a
+  landing plate where an exterior stair meets a storey, at extract time;
+  medium value, one stairwell per build.
 - **Rectified build**: 27 wing walls still clip the spine (the source
   model interlocks there — no rigid motion can separate them), and 1
   stepped door pair near a seam.

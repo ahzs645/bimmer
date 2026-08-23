@@ -1423,7 +1423,21 @@ def cap_envelope(winner, grid, min_neighbours=3, min_headroom=2, rounds=3):
     its neighbours, so a corner that had two covered neighbours has three on
     the next pass. Without rounds the pass stops at the first ring and leaves
     the corners open.
+
+    The neighbour count alone is not enough to say a column is INSIDE. Stand on
+    a low roof one block from a tall wing and three of your eight neighbours
+    are the wing, so the count fires and the pass roofs over open terrace. So a
+    candidate must also fail to ESCAPE: flood horizontally at its own level
+    through columns nothing covers, and if that flood reaches the edge of the
+    model the column is outdoors and is left alone. Two levels of a stepped
+    roof still cap each other; a terrace beside a tower does not get a lid.
     """
+    try:
+        from scipy import ndimage
+    except ImportError:
+        # Without the escape test the neighbour count roofs over terraces, so
+        # the honest degraded behaviour is to cap nothing.
+        return 0
     X, plane = grid["X"], grid["plane"]
     dims = grid["dims"]
 
@@ -1444,18 +1458,36 @@ def cap_envelope(winner, grid, min_neighbours=3, min_headroom=2, rounds=3):
                      CLASS_BLOCKS["stair"]) and z > floor_top.get(column, -1):
             floor_top[column] = z
 
+    def escapes(level):
+        """Columns that reach the edge of the model without passing under a
+        roof, as a lookup keyed by plan column."""
+        free = np.ones((dims[0], dims[1]), dtype=bool)
+        for (x, y), z in top.items():
+            if z >= level + min_headroom + 1:
+                free[x, y] = False
+        labels, _ = ndimage.label(free)
+        border = set(labels[0, :]) | set(labels[-1, :]) | set(labels[:, 0]) | set(labels[:, -1])
+        border.discard(0)
+        return labels, border
+
     capped = 0
     for _ in range(rounds):
       added = 0
-      for column, floor_z in floor_top.items():
-          if top.get(column, -1) != floor_z:
-              continue                       # something already covers it
+      candidates = [(column, z) for column, z in floor_top.items()
+                    if top.get(column, -1) == z]     # nothing covers it yet
+      outdoor_at = {}
+      for level in {z for _, z in candidates}:
+          outdoor_at[level] = escapes(level)
+      for column, floor_z in candidates:
           x, y = column
           covers = [top[(x + dx, y + dy)] for dx in (-1, 0, 1) for dy in (-1, 0, 1)
                     if (dx or dy) and (x + dx, y + dy) in top
                     and top[(x + dx, y + dy)] >= floor_z + min_headroom + 1]
           if len(covers) < min_neighbours:
               continue
+          labels, border = outdoor_at[floor_z]
+          if labels[x, y] in border:
+              continue                       # open terrace, not a missing roof
           level = min(covers)
           if level >= dims[2] or key(x, y, level) in winner:
               continue
@@ -2051,9 +2083,57 @@ def unpack_and_write(winner, grid, out_dir):
     }
 
 
+def self_test() -> int:
+    """The one pass that ADDS cells, on the two shapes it has to tell apart."""
+    X = Y = 20
+    grid = {"X": X, "plane": X * Y, "dims": (X, Y, 12), "pitch": 1.0}
+
+    def key(x, y, z):
+        return x + X * y + X * Y * z
+
+    floor = (CLASS_PRIORITY.index("floor"), CLASS_BLOCKS["floor"])
+    roof = (CLASS_PRIORITY.index("roof"), CLASS_BLOCKS["roof"])
+    failures = []
+
+    # A terrace at z=3 running up against a tower that rises to z=10. Three of
+    # each edge column's eight neighbours are the tower, so the neighbour count
+    # alone would roof the terrace over.
+    terrace = {}
+    for x in range(X):
+        for y in range(Y):
+            terrace[key(x, y, 3)] = floor
+    for x in range(10, X):
+        for y in range(Y):
+            for z in range(4, 11):
+                terrace[key(x, y, z)] = roof
+    capped = cap_envelope(terrace, grid)
+    if capped:
+        failures.append(f"an open terrace beside a tower was roofed over ({capped} cells)")
+
+    # A 3x3 light well through an otherwise complete roof: the floor below it
+    # genuinely has no cover, and nothing about it can escape sideways.
+    well = {}
+    for x in range(X):
+        for y in range(Y):
+            well[key(x, y, 3)] = floor
+            if not (8 <= x <= 10 and 8 <= y <= 10):
+                well[key(x, y, 8)] = roof
+    capped = cap_envelope(well, grid)
+    if capped != 9:
+        failures.append(f"the 3x3 hole in the roof should be capped with 9 cells, got {capped}")
+
+    if failures:
+        print("self-test FAILED")
+        for line in failures:
+            print(f"  {line}")
+        return 1
+    print("self-test passed: a light well is capped and a terrace is left open")
+    return 0
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("ifc", type=Path)
+    ap.add_argument("ifc", type=Path, nargs="?")
     ap.add_argument("--pitch", type=float, default=1.0, help="Voxel size in METRES")
     ap.add_argument("--doors", choices=["functional", "air", "solid"], default="functional",
                     help="how to represent IfcDoor (default: functional openable door)")
@@ -2078,7 +2158,13 @@ def main() -> None:
                     help="Solid-fill each class (rarely wanted; meaningless for non-watertight IFC)")
     ap.add_argument("--out-dir", type=Path, default=Path("out/unbc"))
     ap.add_argument("--threads", type=int, default=max(1, multiprocessing.cpu_count() - 1))
+    ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
+
+    if args.self_test:
+        raise SystemExit(self_test())
+    if not args.ifc:
+        ap.error("give an IFC file, or --self-test")
 
     ifc_path = args.ifc.expanduser().resolve()
     if not ifc_path.exists():

@@ -30,6 +30,7 @@ from collections import Counter, deque
 from pathlib import Path
 
 import numpy as np
+from scipy import ndimage
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from walk_physics import World  # noqa: E402
@@ -85,6 +86,69 @@ def open_to_sky(world: World, cells) -> list:
     return exposed
 
 
+def outdoors_by_escape(world: World, exposed) -> set:
+    """Of the cells with open sky above them, the ones that are simply OUTSIDE.
+
+    A cell is outdoors when you could leave the model from it without ever
+    passing under a roof: flood horizontally at that level through open,
+    unroofed columns and see whether the flood reaches the edge of the world.
+    What does not escape is enclosed by taller building on every side -- a
+    light well, a courtyard that closed up, a missing patch of roof.
+
+    This replaces counting how many neighbouring columns are taller, which
+    cannot tell a light well from the foot of a tall wall: stand on a low roof
+    one block from a tower and three of your eight neighbours are the tower, so
+    the rule called it a hole. On the real building that mislabelled the strip
+    along the base of every taller mass, and the first-person views of those
+    "holes" showed open sky and the campus in the distance -- which is what
+    outdoors looks like.
+    """
+    if not world.solid:
+        return set()
+
+    cells = np.array(list(world.solid.keys()), dtype=np.int64)
+    lo = cells.min(axis=0) - 1
+    # Two clear layers above the topmost block: the highest stand cell sits one
+    # above it, and the headroom test reads one above that.
+    hi = cells.max(axis=0) + np.array([2, 4, 2])
+    shape = tuple(hi - lo)
+    dense = np.zeros(shape, dtype=bool)
+    dense[cells[:, 0] - lo[0], cells[:, 1] - lo[1], cells[:, 2] - lo[2]] = True
+
+    # The highest solid block in each column, as -1 where the column is empty.
+    any_y = dense.any(axis=1)
+    top = np.where(any_y, shape[1] - 1 - np.argmax(dense[:, ::-1, :], axis=1), -(10 ** 9))
+
+    by_level = {}
+    for cell in exposed:
+        by_level.setdefault(cell[1], []).append(cell)
+
+    outside = set()
+    for level, here in by_level.items():
+        y = level - lo[1]
+        if not 0 <= y < shape[1] - 1:
+            continue
+        # open: a player-height gap here; roofed: something at least two blocks
+        # up. The flood may cross the first and never the second.
+        free = (top < level + 2) & ~dense[:, y, :] & ~dense[:, y + 1, :]
+        labels, _ = ndimage.label(free)
+        border = set(labels[0, :]) | set(labels[-1, :]) | set(labels[:, 0]) | set(labels[:, -1])
+        border.discard(0)
+        for cell in here:
+            if labels[cell[0] - lo[0], cell[2] - lo[2]] in border:
+                outside.add(cell)
+    return outside
+
+
+def tread_facings(world: World) -> dict:
+    """Every shaped stair block, mapped to the direction it climbs."""
+    out = {}
+    for p, block in world.solid.items():
+        if "stairs" in block and "facing=" in block:
+            out[p] = block.split("facing=")[1].split(",")[0].split("]")[0]
+    return out
+
+
 def stair_report(world: World, reached: set) -> list[dict]:
     """Per stairwell: does it climb, is it load-bearing, does it turn."""
     stair_cells = {p: b for p, b in world.solid.items()
@@ -123,27 +187,169 @@ def stair_report(world: World, reached: set) -> list[dict]:
     ground = [s for s in world.entrances() if s[1] <= min(y for _, y, _ in world.solid) + 4]
     without = NoStairs(world.solid).reachable(ground) if ground else set()
 
+    def facing(p):
+        block = stair_cells[p]
+        return block.split("facing=")[1].split(",")[0].split("]")[0] if "facing=" in block else None
+
     out = []
     for well in sorted(wells, key=len, reverse=True):
         ys = [p[1] for p in well]
-        facings = Counter(stair_cells[p].split("facing=")[1].split(",")[0].split("]")[0]
-                          for p in well if "facing=" in stair_cells[p])
+        facings = Counter(f for p in well if (f := facing(p)))
         above = [p for p in reached if p[1] > min(ys) + 1
                  and abs(p[0] - int(np.mean([q[0] for q in well]))) < 40]
         served = sum(1 for p in above if p not in without)
+
+        # WHERE the turn happens, not just that the well contains two facings.
+        # A well can hold "north" and "east" because two unrelated flights got
+        # clustered together; a well that faces north up to y=8 and east above
+        # it is one flight that turns, and only the second is a bend you could
+        # walk. The per-level sequence separates them, and it is also what a
+        # reader needs to go and look at the thing.
+        by_level = {}
+        for level in sorted(set(ys)):
+            here = Counter(f for p in well if p[1] == level and (f := facing(p)))
+            if here:
+                by_level[level] = here.most_common(1)[0][0]
+        turns = sum(1 for a, b in zip(list(by_level.values()), list(by_level.values())[1:]) if a != b)
+
+        xs = [p[0] for p in well]
+        zs = [p[2] for p in well]
         out.append({
             "cells": len(well),
             "rise": max(ys) - min(ys),
             "connected": any(p in reached or (p[0], p[1] + 1, p[2]) in reached for p in well),
             "facings": dict(facings),
             "bends": len(facings) > 1,
+            "facing_by_level": by_level,
+            "turns": turns,
+            "at": [int(np.median(xs)), min(ys), int(np.median(zs))],
+            "bbox": [[min(xs), min(ys), min(zs)], [max(xs), max(ys), max(zs)]],
             "cells_only_it_serves": served,
         })
     return out
 
 
+def leaks(world: World, inside: set, outside: set) -> list[dict]:
+    """Where the player crosses from indoors to outdoors, clustered.
+
+    "28,426 outdoor cells are reachable" is a symptom, not a finding: the fix
+    depends entirely on WHERE the boundary is crossed. One stair landing that
+    opens onto a roof is one missing door; two hundred scattered crossings are
+    a wall one block too short everywhere. This returns the crossings, so the
+    difference is visible.
+    """
+    out_edges = {}
+    for cell in inside:
+        for q in world.neighbors(cell):
+            if q in outside:
+                out_edges.setdefault(cell, []).append(q)
+    if not out_edges:
+        return []
+
+    # Cluster the indoor side: crossings within a couple of blocks of each
+    # other are one opening seen from several stand cells, not several openings.
+    seen, groups = set(), []
+    for cell in sorted(out_edges):
+        if cell in seen:
+            continue
+        group, queue = [], deque([cell])
+        seen.add(cell)
+        while queue:
+            x, y, z = queue.popleft()
+            group.append((x, y, z))
+            for dx in (-2, -1, 0, 1, 2):
+                for dy in (-1, 0, 1):
+                    for dz in (-2, -1, 0, 1, 2):
+                        n = (x + dx, y + dy, z + dz)
+                        if n in out_edges and n not in seen:
+                            seen.add(n)
+                            queue.append(n)
+        # A representative EDGE, not a representative cell from each side: the
+        # first version paired the group's first indoor cell with the first
+        # outdoor cell of any edge in it, and printed crossings 90 blocks long.
+        here = min(group)
+        groups.append({"cells": len(group),
+                       "crossings": sum(len(out_edges[c]) for c in group),
+                       "inside": list(here), "outside": list(out_edges[here][0])})
+    return sorted(groups, key=lambda g: g["crossings"], reverse=True)
+
+
+def climb(world: World, well: dict, treads: dict, back: int = 4) -> list[tuple]:
+    """Camera stations up one stairwell: one per flight, looking the way it
+    climbs.
+
+    "Does it bend" is a question about what the player sees while climbing, so
+    the camera stands where the player would and faces where they would face.
+    Two details make the difference between a frame that shows a staircase and
+    a frame that shows a grey wall:
+
+    * the eye goes on the cell ABOVE the tread (feet on the step), not in it;
+    * it backs off a few cells downhill first. Voxelized stairs rise a full
+      block per step, so from the step itself the next tread is a chest-high
+      slab filling the frame -- true, and useless. From a few steps back the
+      flight reads as a flight.
+    """
+    # `facing` is written by the voxelizer as the ASCENT direction, and the
+    # renderer measures yaw from +z toward +x (see `best_view`), so the camera
+    # looks the way the flight goes up.
+    YAW = {"south": 0.0, "east": np.pi / 2, "north": np.pi, "west": -np.pi / 2}
+    STEP = {"south": (0, 1), "east": (1, 0), "north": (0, -1), "west": (-1, 0)}
+
+    # One station per FLIGHT, not per level: a flight is a run of consecutive
+    # levels sharing a facing, and three frames of the same flight from three
+    # steps apart are three pictures of one thing. The turn is between flights.
+    flights = []
+    for level, face in sorted(well["facing_by_level"].items()):
+        if flights and flights[-1][0] == face and level == flights[-1][2] + 1:
+            flights[-1][2] = level
+        else:
+            flights.append([face, level, level])
+
+    (x0, y0, z0), (x1, y1, z1) = well["bbox"]
+    stations = []
+    for face, low, high in flights:
+        here = [p for p in treads
+                if low <= p[1] <= high and x0 <= p[0] <= x1 and z0 <= p[2] <= z1
+                and treads[p] == face]
+        if not here:
+            continue
+        level = low
+        dx, dz = STEP[face]
+        foot = min(here, key=lambda p: (p[1], p[0] * dx + p[2] * dz))   # bottom of the flight
+
+        # Back off DOWN THE SLOPE, one block down per block back: that is the
+        # line a player descending the flight actually occupies, and it clears
+        # the treads instead of burrowing into them. Settle onto whatever is
+        # underfoot at each stop -- a landing, the floor below, the ramp
+        # itself -- so the camera ends up where a player stands, not floating.
+        eye_cell = (foot[0], foot[1] + 1, foot[2])
+        for n in range(1, back + 1):
+            raw = (foot[0] - dx * n, foot[1] + 1 - n, foot[2] - dz * n)
+            if not (world.passable(raw) and world.passable((raw[0], raw[1] + 1, raw[2]))):
+                break                       # backed into a wall; stop here
+            settled = next(((raw[0], raw[1] + dy, raw[2])
+                            for dy in (0, 1, 2, -1, -2, -3, -4, 3)
+                            if world.standable((raw[0], raw[1] + dy, raw[2]))), None)
+            # Keep walking back through open air, but only ever STAND the camera
+            # somewhere a player could stand. Without this the slope runs out
+            # past the end of the building and the frame is shot from inside
+            # the ground: the two worst frames of the first real run were at
+            # y=-1 and y=-3.
+            if settled is None:
+                continue
+            # A doorway is standable and reads as a doorway, not as the bottom
+            # of a staircase; stop one short of one.
+            if any("door" in (world.solid.get((settled[0], settled[1] + h, settled[2])) or "")
+                   for h in (0, 1)):
+                break
+            eye_cell = settled
+        stations.append((eye_cell, YAW[face], level, face))
+    return stations
+
+
 def inspect(blocks: Path, out_dir: Path, views: int = 8,
-            width: int = 448, height: int = 252) -> dict:
+            width: int = 448, height: int = 252, stair_views: int = 0,
+            outside_views: int = 0) -> dict:
     world = World.load(blocks)
     seeds = world.entrances()
     if not seeds:
@@ -162,30 +368,18 @@ def inspect(blocks: Path, out_dir: Path, views: int = 8,
     # what the player can reach hides exactly the rooms most likely to be wrong.
     exposed = set(open_to_sky(world, sorted(standable_cells)))
 
-    # Roof or hole? Both are "standable with open sky above", and the first
-    # version of this decided by LEVEL: a level was outdoors when most of it
-    # was exposed. That works on a building with one flat roof and fails on a
-    # real one -- UNBC has stepped roofs at many levels, so roof terraces at
-    # intermediate levels counted as holes and the number came out at 53% of
-    # the interior, which is not a finding, it is a broken test.
+    # Roof or hole? Both are "standable with open sky above".
     #
-    # Decided per COLUMN instead, by the same rule `cap_envelope` uses: an
-    # exposed cell whose neighbours are covered ABOVE it is a gap in something;
-    # one whose neighbours are not is the top of the building.
-    covered_at = {}
-    for (x, y, z) in world.solid:
-        column = (x, z)
-        if y > covered_at.get(column, -1):
-            covered_at[column] = y
-
-    def is_hole(cell, min_neighbours=3, clearance=2):
-        x, y, z = cell
-        higher = sum(1 for dx in (-1, 0, 1) for dz in (-1, 0, 1)
-                     if (dx or dz) and covered_at.get((x + dx, z + dz), -1) >= y + clearance)
-        return higher >= min_neighbours
-
-    envelope_holes = sorted(p for p in exposed if is_hole(p))
-    roof_cells = exposed - set(envelope_holes)
+    # Decided twice before and wrong both times. By LEVEL (a level is outdoors
+    # when most of it is exposed) broke on stepped roofs and called 53% of the
+    # interior holes. By NEIGHBOUR COUNT (exposed, but three neighbouring
+    # columns are taller) broke along the foot of every tall mass, and the
+    # first-person views of those "holes" showed the campus and the horizon.
+    #
+    # Decided by ESCAPE now: outdoors means you could leave without going under
+    # a roof. See `outdoors_by_escape`.
+    roof_cells = outdoors_by_escape(world, sorted(exposed))
+    envelope_holes = sorted(exposed - roof_cells)
     outdoor_levels = sorted({p[1] for p in roof_cells})
 
     outdoors = roof_cells
@@ -203,6 +397,7 @@ def inspect(blocks: Path, out_dir: Path, views: int = 8,
 
     cut_off = pockets(world, interior, reached)
     stairs = stair_report(world, reached)
+    crossings = leaks(world, interior & reached, outdoors & reached)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     # Views spread over the interior rather than along one route, so every
@@ -214,6 +409,57 @@ def inspect(blocks: Path, out_dir: Path, views: int = 8,
         eye = (cell[0] + 0.5, cell[1] + 1.62, cell[2] + 0.5)
         render(grid, colours, glow, lo, eye, yaw, 0.0, width, height).save(
             out_dir / f"view_{index:02d}_{cell[0]}_{cell[1]}_{cell[2]}.png")
+
+    # A stairwell that "bends" and a player who "gets onto the roof" are both
+    # claims about what you would see standing there, and both were wrong once
+    # in ways the numbers could not show: a well whose two facings came from two
+    # unrelated flights reads as a bend, and a roof cell one block outside a
+    # parapet reads as the player being outdoors. Render them.
+    climbed = []
+    if stair_views:
+        treads = tread_facings(world)
+        turning = [w for w in stairs if w["turns"] >= 1 and w["connected"]]
+        for index, well in enumerate(turning[:stair_views]):
+            stations = climb(world, well, treads)
+            for step, (cell, yaw, level, face) in enumerate(stations):
+                eye = (cell[0] + 0.5, cell[1] + 1.62, cell[2] + 0.5)
+                render(grid, colours, glow, lo, eye, yaw, -0.3, width, height).save(
+                    out_dir / f"stair_{index:02d}_{step:02d}_y{level}_{face}.png")
+            if stations:
+                climbed.append({"at": well["at"], "rise": well["rise"],
+                                "turns": well["turns"],
+                                "stations": [{"cell": list(c), "level": lv, "faces": f}
+                                             for c, _, lv, f in stations]})
+
+    looked_out = []
+    if outside_views and (outside_reachable or envelope_holes):
+        for index, cell in enumerate(spread(outside_reachable, outside_views)):
+            eye = (cell[0] + 0.5, cell[1] + 1.62, cell[2] + 0.5)
+            # Down the slope of the roof rather than at the horizon: what makes
+            # a roof-poke visible is the building falling away below the feet.
+            for tag, pitch in (("out", 0.0), ("down", 0.55)):
+                render(grid, colours, glow, lo, eye, best_view(world, cell), pitch,
+                       width, height).save(
+                    out_dir / f"outside_{index:02d}_{tag}_{cell[0]}_{cell[1]}_{cell[2]}.png")
+            looked_out.append(list(cell))
+
+        # Looking UP from inside a hole: sky overhead with the building's own
+        # walls around it. This is the frame that separates a hole from a spot
+        # that is simply outdoors -- both see sky, only one is boxed in.
+        for index, cell in enumerate(spread(envelope_holes, outside_views)):
+            eye = (cell[0] + 0.5, cell[1] + 1.62, cell[2] + 0.5)
+            render(grid, colours, glow, lo, eye, best_view(world, cell), -1.2,
+                   width, height).save(
+                out_dir / f"hole_{index:02d}_{cell[0]}_{cell[1]}_{cell[2]}.png")
+
+        # And the doorway itself: standing indoors, looking at the gap. A view
+        # from the roof shows that the player got out; only this shows how.
+        for index, leak in enumerate(crossings[:outside_views]):
+            a, b = leak["inside"], leak["outside"]
+            yaw = float(np.arctan2(b[0] - a[0], b[2] - a[2]))
+            eye = (a[0] + 0.5, a[1] + 1.62, a[2] + 0.5)
+            render(grid, colours, glow, lo, eye, yaw, 0.0, width, height).save(
+                out_dir / f"leak_{index:02d}_{a[0]}_{a[1]}_{a[2]}.png")
 
     report = {
         "blocks": str(blocks),
@@ -228,7 +474,11 @@ def inspect(blocks: Path, out_dir: Path, views: int = 8,
         "envelope_holes_sample": [list(p) for p in envelope_holes[:10]],
         "outside_reachable": len(outside_reachable),
         "outside_reachable_sample": [list(p) for p in outside_reachable[:10]],
+        "crossings": len(crossings),
+        "crossings_top": crossings[:10],
         "stairwells": stairs,
+        "climbed": climbed,
+        "looked_out": looked_out,
         "views": [list(p) for p in picked],
     }
     (out_dir / "interior.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -320,12 +570,85 @@ def self_test() -> int:
         if len(list((tmp / "out").glob("view_*.png"))) != 3:
             failures.append("a view per region should be written")
 
+        # A dog-leg: three treads east, then three north. Two facings in one
+        # well is not enough to call that a bend -- the earlier version said
+        # "bends" for any well holding two facings, including two separate
+        # straight flights that happened to touch. What makes this one a bend
+        # is that the facing CHANGES AS YOU RISE, and that is what is asserted.
+        blocks = tmp / "stairs.csv"
+        rows = []
+        for x in range(16):
+            for z in range(16):
+                rows.append((x, 0, z, "minecraft:smooth_stone"))
+                rows.append((x, 9, z, "minecraft:deepslate_tiles"))
+        for y in range(1, 9):
+            for i in range(16):
+                for p2 in ((i, y, 0), (i, y, 15), (0, y, i), (15, y, i)):
+                    rows.append((*p2, "minecraft:white_concrete"))
+        for y, half in ((1, "lower"), (2, "upper")):
+            rows.append((0, y, 8, f"minecraft:oak_door[facing=east,half={half}]"))
+        for cell, face in (((3, 1, 8), "east"), ((4, 2, 8), "east"), ((5, 3, 8), "east"),
+                           ((6, 4, 8), "north"), ((6, 5, 7), "north"), ((6, 6, 6), "north"),
+                           ((6, 7, 5), "north"), ((6, 8, 4), "north")):
+            rows.append((*cell, f"minecraft:stone_brick_stairs[facing={face}]"))
+        # ... and out through an open hatch onto the roof, which is the whole
+        # "poking outside" failure in miniature: nothing is broken, the stair
+        # simply arrives above the roof line and the player keeps walking.
+        rows = [r for r in rows if (r[0], r[1], r[2]) not in {(6, 9, 4), (6, 9, 5)}]
+        with blocks.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["x", "y", "z", "block"])
+            writer.writerows(rows)
+
+        report = inspect(blocks, tmp / "stairs", views=1, width=64, height=36,
+                         stair_views=1, outside_views=1)
+        wells = report["stairwells"]
+        if not wells:
+            failures.append("the dog-leg stair should be found as a well")
+        else:
+            well = wells[0]
+            if well["turns"] != 1:
+                failures.append(f"the dog-leg should turn exactly once, got {well['turns']} "
+                                f"from {well['facing_by_level']}")
+            if well["rise"] != 7:
+                failures.append(f"the flight rises 7, got {well['rise']}")
+            if not well["connected"]:
+                failures.append("a stair reachable from the door should not read ISOLATED")
+        if not report["climbed"]:
+            failures.append("a turning stairwell should be climbed in first person")
+        else:
+            faces = [st["faces"] for st in report["climbed"][0]["stations"]]
+            if faces != ["east", "north"]:
+                failures.append(f"one station per flight, following the turn; got {faces}")
+            floor = min(y for _, y, _ in World.load(blocks).solid)
+            for st in report["climbed"][0]["stations"]:
+                if st["cell"][1] <= floor:
+                    failures.append(f"a camera station fell through the floor: {st['cell']}")
+        if len(list((tmp / "stairs").glob("stair_*.png"))) != 2:
+            failures.append("a frame per flight should be written")
+        if not report["outside_reachable"]:
+            failures.append("the stair through the roof hatch should reach outdoors")
+        if report["crossings"] != 1:
+            failures.append(f"the one hatch should be ONE crossing, "
+                            f"got {report['crossings']}: {report['crossings_top'][:3]}")
+        if not list((tmp / "stairs").glob("leak_*.png")):
+            failures.append("the crossing should be shown from indoors")
+        # A crossing is ONE STEP: the pair has to be an edge of the walk graph,
+        # not one cell from each side of the cluster. The first version paired
+        # the group's first indoor cell with the first outdoor cell of any edge
+        # in it and reported crossings 90 blocks long.
+        for leak in report["crossings_top"]:
+            (ax, ay, az), (bx, by, bz) = leak["inside"], leak["outside"]
+            if abs(ax - bx) > 1 or abs(az - bz) > 1 or not -3 <= by - ay <= 1:
+                failures.append(f"a crossing should be one player step, got "
+                                f"{leak['inside']} -> {leak['outside']}")
+
     if failures:
         print("self-test FAILED")
         for line in failures:
             print(f"  {line}")
         return 1
-    print("self-test passed: a sealed room located and a roof hole found")
+    print("self-test passed: sealed room located, roof hole found, dog-leg climbed")
     return 0
 
 
@@ -335,6 +658,10 @@ def main() -> int:
     ap.add_argument("blocks", nargs="?", type=Path)
     ap.add_argument("--out", type=Path, default=Path("out/inspect"))
     ap.add_argument("--views", type=int, default=8)
+    ap.add_argument("--stair-views", type=int, default=0,
+                    help="climb this many turning stairwells in first person")
+    ap.add_argument("--outside-views", type=int, default=0,
+                    help="stand on this many reachable outdoor cells")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
 
@@ -343,7 +670,8 @@ def main() -> int:
     if not args.blocks:
         ap.error("give a blocks.csv, or --self-test")
 
-    r = inspect(args.blocks, args.out, args.views)
+    r = inspect(args.blocks, args.out, args.views,
+                stair_views=args.stair_views, outside_views=args.outside_views)
     print(f"{r['reachable_interior']:,} of {r['interior']:,} INTERIOR cells reachable "
           f"from {r['entrances']} entrance cells")
     print(f"  ({r['roof_cells']:,} standable cells are roof -- open sky, nothing covering them)")
@@ -359,16 +687,31 @@ def main() -> int:
     for cell in r["envelope_holes_sample"][:5]:
         print(f"  {tuple(cell)}")
 
-    print(f"\npoking outside: {r['outside_reachable']:,} outdoor cells the player can reach")
-    for cell in r["outside_reachable_sample"][:5]:
-        print(f"  {tuple(cell)}")
+    print(f"\npoking outside: {r['outside_reachable']:,} outdoor cells the player can reach, "
+          f"through {r['crossings']:,} opening(s)")
+    for leak in r["crossings_top"][:5]:
+        print(f"  {tuple(leak['inside'])} -> {tuple(leak['outside'])} "
+              f"({leak['crossings']} crossings over {leak['cells']} stand cells)")
 
     print(f"\nstairwells: {len(r['stairwells'])}")
     for well in r["stairwells"]:
-        turn = "bends " + "/".join(well["facings"]) if well["bends"] else "straight"
-        print(f"  {well['cells']:>3} cells, rise {well['rise']}, {turn}, "
+        if well["turns"]:
+            turn = (f"turns {well['turns']}x: "
+                    + " -> ".join(f"y{lv}:{f}" for lv, f in sorted(well["facing_by_level"].items())))
+        elif well["bends"]:
+            turn = "two facings, one level (" + "/".join(well["facings"]) + ")"
+        else:
+            turn = "straight"
+        print(f"  {well['cells']:>3} cells at {tuple(well['at'])}, rise {well['rise']}, {turn}, "
               f"{'connected' if well['connected'] else 'ISOLATED'}, "
               f"serves {well['cells_only_it_serves']:,} cells nothing else reaches")
+
+    if r["climbed"]:
+        print(f"\nclimbed {len(r['climbed'])} turning stairwell(s) in first person "
+              f"-> {args.out}/stair_*.png")
+    if r["looked_out"]:
+        print(f"stood on {len(r['looked_out'])} reachable outdoor cell(s) "
+              f"-> {args.out}/outside_*.png")
 
     print(f"\n{len(r['views'])} views -> {args.out}")
     return 0
