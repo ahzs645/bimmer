@@ -77,10 +77,12 @@ synthetic producers with no model needed. See REVITER.md.
 make rectify-preview IFC="<model.ifc>"
 ```
 
-`--rectify` moves whole wings, and the only way to see that used to be
-converting twice. The wing computation reads wall placements only, so
-`preview_rectify.py` runs the same function the engine runs and draws a
-before/after plan in seconds. `--self-test` needs no model. RECTIFY.md.
+`docs/rectify_*_before_after.png` show this on UNBC already, but nothing
+in the repo can regenerate them — they were committed with Phase 1 with
+no generator. The wing computation reads wall placements only, so
+`preview_rectify.py` runs the same function the engine runs and draws
+the same comparison in seconds, on any IFC, after any engine change.
+`--self-test` needs no model. RECTIFY.md.
 
 ## After ANY engine change, run this
 

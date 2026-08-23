@@ -102,11 +102,14 @@ make rectify-preview IFC="model.ifc"
 python3 scripts/preview_rectify.py --self-test    # needs no model
 ```
 
-Rectification is the one stage that visibly moves the building, and for a long
-time the only way to see it was to convert twice and compare two worlds — about
-forty minutes to answer "which wings did it find, and where do they land".
+The two figures above are the real campus from a real run, and they are better
+evidence than any synthetic check. What they are not is reproducible: they were
+committed with Phase 1 and no generator went with them, so they cannot be
+re-made after an engine change, re-run at a different pitch, or pointed at
+another model — including an IFC recovered from the RVT by the parser in
+`parsers/reviter` rather than exported by Revit.
 
-It never needed to be. `compute_wing_transforms` reads IFC wall **placements**
+`compute_wing_transforms` reads IFC wall **placements**
 and nothing else: no geometry, no meshing. `preview_rectify.py` runs the
 identical function the engine runs and draws the answer as a before/after plan —
 each wing in its own colour, the on-grid spine in grey — plus the per-wing
@@ -115,10 +118,14 @@ before and against after. Its `--json` is the same `wing_records` shape
 `--rectify` writes into `summary.json`, so a preview and a real build compare
 field by field.
 
-Membership is a convex-hull test, which is worth knowing when reading the
-picture: an axis-aligned wall that happens to sit inside a wing's hull belongs
-to that wing and moves with it. Grey dots inside a coloured cloud are not
-mistakes.
+Two things to know when reading the picture. Membership is a convex-hull test,
+so an axis-aligned wall that happens to sit inside a wing's hull belongs to that
+wing and moves with it — grey inside a coloured cloud is not a mistake. And the
+walls that belong to no wing are **two** populations, not one: already on the
+grid, and off-grid with an angle family too small or too scattered to cluster.
+The second kind does not move and does voxelize as a jagged line, so it is drawn
+and counted separately. On UNBC that is roughly 7% of walls; the committed
+figure above shows the same three populations.
 
 The preview covers Phase 1 only. Seam stitching runs later against the voxel
 grid and cannot be known from placements.

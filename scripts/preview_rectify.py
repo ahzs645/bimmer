@@ -2,13 +2,20 @@
 """See what `--rectify` will do to a model, before converting it.
 
 Rectification is the one stage that visibly *moves the building* — whole wings
-swing onto the voxel grid — and until now the only way to look at it was to run
-the full conversion and compare two worlds. That is roughly forty minutes to
-answer "which wings did it find, and where do they end up".
+swing onto the voxel grid.
 
-It does not need to be. `compute_wing_transforms` reads IFC wall **placements**
-and nothing else: no geometry, no meshing. This runs the identical function the
-engine runs, and draws the answer.
+`docs/rectify_walls_before_after.png` and `docs/rectify_voxel_plan_before_after.png`
+already show that happening on the UNBC model, and they are better evidence than
+anything here: they are the real campus, from a real run. What they are not is
+**reproducible**. They were committed with Phase 1 in July 2026 and no generator
+went with them, so they cannot be re-made after an engine change, re-run at a
+different pitch, or pointed at another model — including an IFC recovered from
+the RVT rather than exported by Revit.
+
+This makes that view a tool. `compute_wing_transforms` reads IFC wall
+**placements** and nothing else: no geometry, no meshing, so it answers in
+seconds rather than the ~40 minutes two full conversions take. It runs the
+identical function the engine runs, and draws the answer.
 
     python3 scripts/preview_rectify.py model.ifc
     python3 scripts/preview_rectify.py model.ifc --svg out/rectify.svg --json out/wings.json
@@ -43,10 +50,17 @@ from rectify import (  # noqa: E402 -- after the sys.path line, deliberately
     wing_records,
 )
 
-# Colour-blind-safe qualitative hues; grey is reserved for the on-grid spine.
+# Colour-blind-safe qualitative hues; the two greys are the walls that do not
+# belong to any wing.
 WING_COLOURS = ["#e66100", "#5d3a9b", "#1a85ff", "#d41159", "#008080", "#994f00",
                 "#40b0a6", "#e1be6a"]
 SPINE = "#9a9a9a"
+# Off-grid, but in no wing: too few of its angle family, or too far from the
+# cluster. It stays exactly where it is and voxelizes as a jagged line, which
+# is a different fact from "already on the grid" and needs its own colour.
+# Measured on UNBC, this is about 7% of walls -- the committed
+# docs/rectify_walls_before_after.png shows the same population.
+UNCLAIMED = "#c8b8d8"
 
 
 def wall_plan(model):
@@ -117,7 +131,7 @@ def assign(wings, points):
     return owner
 
 
-def svg(points, angles, owner, wings, path: Path, long_edge: int = 1400) -> None:
+def svg(points, angles, owner, on_axis, wings, path: Path, long_edge: int = 1400) -> None:
     """A before/after plan, drawn as oriented wall segments.
 
     Two things the first version of this got wrong, both of which made it
@@ -130,6 +144,12 @@ def svg(points, angles, owner, wings, path: Path, long_edge: int = 1400) -> None
     - **The panels are laid out along the model's short axis.** Side by side
       is right for a tall building and halves the scale of a wide one. The
       aspect ratio decides, so the drawing fills the canvas either way.
+
+    A third fault came from reading the figure this repository already
+    committed: walls with no wing were all drawn as "on-grid spine", when some
+    of them are off-grid walls whose angle family was too small or too scattered
+    to cluster. Those do not move and do voxelize as jagged lines, which is the
+    opposite of being on the grid, so they get their own colour.
     """
     after_points = points.copy()
     after_angles = angles.copy()
@@ -195,7 +215,10 @@ def svg(points, angles, owner, wings, path: Path, long_edge: int = 1400) -> None
         parts.append(f'<text class="t" x="{ox:.0f}" y="{oy - 9:.0f}">{title}</text>')
         x1, y1, x2, y2 = segments(data, data_angles, ox, oy)
         for row in range(len(data)):
-            colour = SPINE if owner[row] < 0 else WING_COLOURS[owner[row] % len(WING_COLOURS)]
+            if owner[row] >= 0:
+                colour = WING_COLOURS[owner[row] % len(WING_COLOURS)]
+            else:
+                colour = SPINE if on_axis[row] else UNCLAIMED
             parts.append(
                 f'<line x1="{x1[row]:.1f}" y1="{y1[row]:.1f}" x2="{x2[row]:.1f}" '
                 f'y2="{y2[row]:.1f}" stroke="{colour}" stroke-width="{stroke:.1f}" '
@@ -209,7 +232,11 @@ def svg(points, angles, owner, wings, path: Path, long_edge: int = 1400) -> None
         return 46 + 8.0 * len(rendered)
 
     legend_y = height - 16
-    entries = [(SPINE, "on-grid spine")]
+    spine_n = int((on_axis & (owner < 0)).sum())
+    loose_n = int((~on_axis & (owner < 0)).sum())
+    entries = [(SPINE, f"on-grid spine: {spine_n} walls")]
+    if loose_n:
+        entries.append((UNCLAIMED, f"off-grid, no wing: {loose_n} walls (stay jagged)"))
     for index, wing in enumerate(wings):
         tx, ty = wing.get("shift", (0.0, 0.0))
         shove = f", shove ({tx:+.0f}, {ty:+.0f}) m" if (tx or ty) else ""
@@ -291,7 +318,7 @@ def main() -> int:
 
     if not args.no_svg:
         out = args.svg or args.ifc.with_suffix(".rectify.svg")
-        svg(points, angles, owner, wings, out)
+        svg(points, angles, owner, on_axis, wings, out)
         print(f"wrote {out}")
     return 0
 
@@ -341,6 +368,13 @@ def _two_grid_fixture(path: Path, wing_degrees: float = 58.0) -> None:
         for row in range(15):
             wall(column * 4.0, row * 4.0, 0.0 if row % 2 else 90.0)
 
+    # A scatter of odd angles: too few of any one family to be a wing, so they
+    # stay put and voxelize as jagged lines. Without them the fixture has only
+    # two populations and cannot tell "on the grid" apart from "off the grid and
+    # not moving" -- which is exactly the confusion this fixture missed once.
+    for index in range(24):
+        wall(-40.0 + index * 1.5, -30.0 - index * 0.7, 17.0 + index * 2.0)
+
     # Wing: 300 walls at `wing_degrees`. Its origin is far enough east that the
     # ROTATED footprint clears the spine -- a wing rotated by 58 degrees reaches
     # back about 48 m in -x, so an origin chosen from the unrotated extent puts
@@ -373,7 +407,7 @@ def self_test() -> int:
 
         model = ifcopenshell.open(str(fixture))
         points, angles = wall_plan(model)
-        expect(len(points) == 600, f"fixture should hold 600 walls, read {len(points)}")
+        expect(len(points) == 624, f"fixture should hold 624 walls, read {len(points)}")
 
         on_axis = on_grid(angles)
         expect(int(on_axis.sum()) == 300,
@@ -402,15 +436,24 @@ def self_test() -> int:
                    f"rectification should not drive the wing INTO the spine "
                    f"({before_if_naive} -> {after} walls within 2 m)")
 
+            loose = int((~on_axis & (owner < 0)).sum())
+            expect(loose > 0, "the fixture must carry off-grid walls that join no wing, "
+                              "or the three-population colouring is never exercised")
+
             out = tmp / "preview.svg"
-            svg(points, angles, owner, wings, out)
+            svg(points, angles, owner, on_axis, wings, out)
             text = out.read_text()
             expect(text.startswith("<svg") and text.rstrip().endswith("</svg>"),
                    "the SVG should be well formed")
-            expect(text.count("<line") == 1200,
-                   f"both panels should draw all 600 walls, found {text.count('<line')}")
+            expect(text.count("<line") == 1248,
+                   f"both panels should draw all 624 walls, found {text.count('<line')}")
             expect("before" in text and "after --rectify" in text,
                    "both panels should be labelled")
+            # The bug the committed UNBC figure exposed: these were drawn and
+            # labelled as on-grid spine, which is the opposite of what they are.
+            expect(UNCLAIMED in text,
+                   "off-grid walls in no wing must not be coloured as on-grid spine")
+            expect("stay jagged" in text, "and the legend must say what they are")
 
     if failures:
         print("self-test FAILED")
