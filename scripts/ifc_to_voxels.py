@@ -185,13 +185,33 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
     excluded_counts: Counter = Counter()
     processed = 0
 
+    # Drain the iterator, THEN process in element order. A multi-threaded
+    # iterator yields shapes in thread-completion order, so the same file
+    # converts differently from one run to the next: measured on the fixture
+    # under load, two runs at --threads 8 differ by 129 of 6,058 blocks, and in
+    # one of them a whole storey fell from 99% reachable to 0%. Order matters
+    # because several decisions here are taken by whichever element arrives
+    # first -- a wing assignment is cached on an aggregate's first member, and
+    # an equal-priority cell keeps its first writer.
+    #
+    # It costs no extra memory in practice: every vertex array below is
+    # retained until the merge anyway.
+    drained = []
     while True:
         shape = iterator.get()
-        element = model.by_id(shape.id)
-        ifc_type = element.is_a()
         geom = shape.geometry
-        v = np.asarray(geom.verts, dtype=np.float64).reshape((-1, 3))
-        f = np.asarray(geom.faces, dtype=np.int64).reshape((-1, 3))
+        drained.append((
+            shape.id,
+            np.asarray(geom.verts, dtype=np.float64).reshape((-1, 3)),
+            np.asarray(geom.faces, dtype=np.int64).reshape((-1, 3)),
+        ))
+        if not iterator.next():
+            break
+    drained.sort(key=lambda item: item[0])
+
+    for shape_id, v, f in drained:
+        element = model.by_id(shape_id)
+        ifc_type = element.is_a()
 
         if wings and len(v):
             # rectification: rotate every element of an off-grid wing into
@@ -200,7 +220,7 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
             # railings rotate together even if a member's own centroid
             # falls just outside the wing hull.
             dec = getattr(element, "Decomposes", None)
-            root = dec[0].RelatingObject.id() if dec else shape.id
+            root = dec[0].RelatingObject.id() if dec else shape_id
             if root not in wing_cache:
                 cx, cy = v[:, 0].mean(), v[:, 1].mean()
                 wing_cache[root] = wing_for_point(wings, cx, cy)
@@ -216,8 +236,8 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
                                     "gid": element.GlobalId})
                 type_counts[ifc_type] += 1
                 processed += 1
-        elif shape.id in spiral_part_of and len(v):
-            spirals[spiral_part_of[shape.id]].append(v)
+        elif shape_id in spiral_part_of and len(v):
+            spirals[spiral_part_of[shape_id]].append(v)
             type_counts[ifc_type] += 1
             processed += 1
         elif len(v) and len(f):
@@ -234,16 +254,13 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
             # at coarse pitch) can be rebuilt as clean walkable runs later.
             if cls == "stair":
                 dec = getattr(element, "Decomposes", None)
-                aid = dec[0].RelatingObject.id() if dec else shape.id
+                aid = dec[0].RelatingObject.id() if dec else shape_id
                 stair_groups[aid].append(v)
             verts_by_class[cls].append(v)
             faces_by_class[cls].append(f + offset_by_class[cls])
             offset_by_class[cls] += len(v)
             type_counts[ifc_type] += 1
             processed += 1
-
-        if not iterator.next():
-            break
 
     meshes: dict[str, trimesh.Trimesh] = {}
     for cls in verts_by_class:
@@ -1384,6 +1401,73 @@ def connect_hidden_rooms(winner, grid):
     return connected, hidden_found, len(hidden), carved
 
 
+def cap_envelope(winner, grid, min_neighbours=3, min_headroom=2, rounds=3):
+    """Roof over interior columns whose floor reaches past the roof above it.
+
+    A floor plate and the roof plate above it are separate meshes that round
+    separately, and a wing that `--rectify` rotated rounds differently again,
+    so an edge column can keep its floor and lose its cover. The player stands
+    inside the building looking straight up at the sky.
+
+    The rule is about the eaves rather than about potholes -- these cells are
+    at the edge of a plate, so `patch_floor_holes`'s "surrounded on 6 of 8
+    sides" test can never fire on them. A column is capped when it has a floor,
+    nothing at all above it, and at least `min_neighbours` of its 8 neighbours
+    are covered; the cap goes at the lowest of those neighbours' cover levels.
+
+    Lesson S12 governs the rest: a pass that ADDS cells must not crush what is
+    under them, so a cap needs `min_headroom` clear cells above the floor and
+    is skipped otherwise.
+
+    Iterated, for the same reason `patch_floor_holes` is: capping a cell covers
+    its neighbours, so a corner that had two covered neighbours has three on
+    the next pass. Without rounds the pass stops at the first ring and leaves
+    the corners open.
+    """
+    X, plane = grid["X"], grid["plane"]
+    dims = grid["dims"]
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    top: dict[tuple[int, int], int] = {}
+    floor_top: dict[tuple[int, int], int] = {}
+    for k, (_, block) in winner.items():
+        z = k // plane
+        rem = k - z * plane
+        y = rem // X
+        x = rem - y * X
+        column = (x, y)
+        if z > top.get(column, -1):
+            top[column] = z
+        if block in (CLASS_BLOCKS["floor"], CLASS_BLOCKS["roof"],
+                     CLASS_BLOCKS["stair"]) and z > floor_top.get(column, -1):
+            floor_top[column] = z
+
+    capped = 0
+    for _ in range(rounds):
+      added = 0
+      for column, floor_z in floor_top.items():
+          if top.get(column, -1) != floor_z:
+              continue                       # something already covers it
+          x, y = column
+          covers = [top[(x + dx, y + dy)] for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                    if (dx or dy) and (x + dx, y + dy) in top
+                    and top[(x + dx, y + dy)] >= floor_z + min_headroom + 1]
+          if len(covers) < min_neighbours:
+              continue
+          level = min(covers)
+          if level >= dims[2] or key(x, y, level) in winner:
+              continue
+          winner[key(x, y, level)] = (CLASS_PRIORITY.index("roof"), CLASS_BLOCKS["roof"])
+          top[column] = level
+          capped += 1
+          added += 1
+      if not added:
+          break
+    return capped
+
+
 def patch_floor_holes(winner, grid, min_ring=6, rounds=3):
     """Make storey plates contiguous: fill pothole gaps in floors/ceilings.
 
@@ -2050,6 +2134,12 @@ def main() -> None:
           f"({terrain_cells} grass/dirt cells)", flush=True)
     seams_built, seam_cells, seam_log = stitch_seams(winner, grid)
     print(f"Stitched {seams_built} seam corridors ({seam_cells} cells)", flush=True)
+    # After the stitcher, not before it. Capping adds blocks overhead, and a
+    # cap placed first constrains where a seam corridor can be carved -- on the
+    # fixture that cost 0.8% of the interior to close eight sky holes. Let the
+    # stitcher connect the building first, then close what is still open.
+    capped = cap_envelope(winner, grid)
+    print(f"Capped {capped} interior cells that were open to the sky", flush=True)
     lanterns = light_ceilings(winner, grid)
     print(f"Recessed {lanterns} ceiling sea lanterns for interior light", flush=True)
     if args.floor_slabs:
@@ -2103,6 +2193,7 @@ def main() -> None:
         "hidden_rooms_connected": rooms_connected,
         "hidden_rooms_left": rooms_left,
         "floor_holes_patched": holes_filled,
+        "envelope_capped": capped,
         "doors_grounded": doors_grounded,
         "ceiling_lanterns": lanterns,
         "seam_corridors": seams_built,

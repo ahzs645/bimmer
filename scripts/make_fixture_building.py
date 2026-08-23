@@ -108,7 +108,7 @@ class Builder:
         self.products.append(product)
         return product
 
-    def wall(self, name, a, b, gaps=()):
+    def wall(self, name, a, b, gaps=(), base_z=0.0):
         """A wall from a to b, split around each (centre_t, width) opening.
 
         Splitting rather than subtracting keeps the fixture readable and gives
@@ -137,11 +137,11 @@ class Builder:
             mid = (lo + hi) / 2
             made.append(self.add(
                 "IfcWall", f"{name}-{index}",
-                x1 + mid * math.cos(radians), y1 + mid * math.sin(radians), SLAB_T,
-                hi - lo, WALL_T, WALL_H, degrees))
+                x1 + mid * math.cos(radians), y1 + mid * math.sin(radians),
+                base_z + SLAB_T, hi - lo, WALL_T, WALL_H, degrees))
         return made
 
-    def door(self, name, a, b, t):
+    def door(self, name, a, b, t, base_z=0.0):
         """A door leaf sitting in a wall's gap, `t` metres along a->b."""
         (x1, y1), (x2, y2) = a, b
         length = math.hypot(x2 - x1, y2 - y1)
@@ -149,10 +149,101 @@ class Builder:
         radians = math.radians(degrees)
         return self.add(
             "IfcDoor", name,
-            x1 + t * math.cos(radians), y1 + t * math.sin(radians), SLAB_T,
+            x1 + t * math.cos(radians), y1 + t * math.sin(radians), base_z + SLAB_T,
             DOOR_W * 0.9, WALL_T * 0.5, DOOR_H, degrees,
             OverallHeight=DOOR_H, OverallWidth=DOOR_W * 0.9,
             PredefinedType="DOOR", OperationType="SINGLE_SWING_LEFT")
+
+    def multi_box(self, entity, name, boxes, **kwargs):
+        """One product whose body is several extruded boxes.
+
+        A stair flight is a stepped solid, and `IfcShapeRepresentation.Items`
+        takes a list -- so a flight is one product with one tread per item,
+        rather than a product per tread. That matters downstream: the engine
+        groups stair geometry per assembly, and a flight split into eleven
+        products is eleven things to group.
+        """
+        f = self.file
+        items = []
+        for (cx, cy, z, length, width, height, degrees) in boxes:
+            profile = f.create_entity("IfcRectangleProfileDef", "AREA", None,
+                                      f.create_entity("IfcAxis2Placement2D",
+                                                      f.create_entity("IfcCartesianPoint", (0.0, 0.0))),
+                                      length, width)
+            radians = math.radians(degrees)
+            spot = f.create_entity("IfcAxis2Placement3D",
+                                   f.create_entity("IfcCartesianPoint",
+                                                   (float(cx), float(cy), float(z))), None,
+                                   f.create_entity("IfcDirection",
+                                                   (math.cos(radians), math.sin(radians), 0.0)))
+            items.append(f.create_entity("IfcExtrudedAreaSolid", profile, spot, self.up, height))
+        shape = f.create_entity("IfcShapeRepresentation", self.body, "Body", "SweptSolid", items)
+        zero = f.create_entity("IfcLocalPlacement", RelativePlacement=f.create_entity(
+            "IfcAxis2Placement3D", self.origin))
+        product = f.create_entity(
+            entity, self.guid(), self.history, name, ObjectPlacement=zero,
+            Representation=f.create_entity("IfcProductDefinitionShape", None, None, [shape]),
+            Tag=str(len(self.products) + 1), **kwargs)
+        self.products.append(product)
+        return product
+
+    def stair(self, name, base_z, top_z, start, run_dir, turn_dir, width=1.2,
+              treads_per_flight=3):
+        """An L-shaped stair: a flight, a landing, then a flight at 90 degrees.
+
+        Straight runs never exercise the corner-shape logic, and a stair that
+        does not bend cannot show whether a bend survives voxelization. The
+        landing between the flights is what makes the turn a turn rather than a
+        diagonal.
+
+        Emitted as an IfcStair aggregating its flights, because three passes in
+        the engine key on that relationship and a bare flight is invisible to
+        all of them.
+        """
+        rise = (top_z - base_z) / (treads_per_flight * 2)
+        going = rise                      # 45 degrees: what a 1 m voxel can hold
+        flights = []
+        x, y = start
+        rdx, rdy = run_dir
+        z = base_z
+
+        boxes = []
+        for _ in range(treads_per_flight):
+            boxes.append((x + rdx * going / 2, y + rdy * going / 2, z,
+                          going, width, rise, math.degrees(math.atan2(rdy, rdx))))
+            x += rdx * going
+            y += rdy * going
+            z += rise
+        flights.append(self.multi_box("IfcStairFlight", f"{name}-flight-1", boxes))
+
+        landing_deg = math.degrees(math.atan2(rdy, rdx))
+        self.multi_box("IfcSlab", f"{name}-landing",
+                       [(x + rdx * width / 2, y + rdy * width / 2, z - rise,
+                         width, width, rise, landing_deg)],
+                       PredefinedType="LANDING")
+        x += rdx * width
+        y += rdy * width
+
+        tdx, tdy = turn_dir
+        boxes = []
+        for _ in range(treads_per_flight):
+            boxes.append((x + tdx * going / 2, y + tdy * going / 2, z,
+                          going, width, rise, math.degrees(math.atan2(tdy, tdx))))
+            x += tdx * going
+            y += tdy * going
+            z += rise
+        flights.append(self.multi_box("IfcStairFlight", f"{name}-flight-2", boxes))
+
+        container = self.file.create_entity(
+            "IfcStair", self.guid(), self.history, name,
+            ObjectPlacement=self.file.create_entity(
+                "IfcLocalPlacement",
+                RelativePlacement=self.file.create_entity("IfcAxis2Placement3D", self.origin)),
+            Tag=str(len(self.products) + 1), PredefinedType="QUARTER_TURN_STAIR")
+        self.products.append(container)
+        self.file.create_entity("IfcRelAggregates", self.guid(), self.history,
+                                RelatingObject=container, RelatedObjects=flights)
+        return container, (x, y)
 
     def slab(self, name, cx, cy, z, length, width, degrees, predefined="FLOOR"):
         return self.add("IfcSlab", name, cx, cy, z, length, width, SLAB_T, degrees,
@@ -173,7 +264,26 @@ def local(ox, oy, degrees):
     return lambda x, y: (ox + x * c - y * s, oy + x * s + y * c)
 
 
-def block(b, name, frame, cols, rows, cell_x, cell_y, west_gap=True):
+def slab_with_hole(b, name, frame, width, height, z, hole, predefined="FLOOR"):
+    """A floor slab as four rectangles around an opening.
+
+    A stairwell needs a hole in the slab above it or the stair climbs into a
+    ceiling -- lesson S8, which disconnected every upper floor of the real
+    model. Four rectangles is the cheap way to say that in IFC without a
+    boolean.
+    """
+    x0, y0, x1, y1 = hole
+    pieces = [(0, 0, width, y0), (0, y1, width, height - y1),
+              (0, y0, x0, y1 - y0), (x1, y0, width - x1, y1 - y0)]
+    for index, (px, py, pw, ph) in enumerate(pieces):
+        if pw <= 0.01 or ph <= 0.01:
+            continue
+        cx, cy = frame.at(px + pw / 2, py + ph / 2)
+        b.slab(f"{name}-{index}", cx, cy, z, pw, ph, frame.degrees, predefined)
+
+
+def block(b, name, frame, cols, rows, cell_x, cell_y, west_gap=True,
+          base_z=0.0, hole=None):
     """A rectangular block of `cols` x `rows` rooms, with a door in every wall.
 
     A block, not a room: wing detection clusters wall POSITIONS and then takes
@@ -185,19 +295,21 @@ def block(b, name, frame, cols, rows, cell_x, cell_y, west_gap=True):
     degrees = frame.degrees
     corner = frame.at
 
-    b.slab(f"{name}-floor", *frame.centre(width / 2, height / 2), 0.0, width, height, degrees)
-    b.slab(f"{name}-ceiling", *frame.centre(width / 2, height / 2),
-           SLAB_T + WALL_H, width, height, degrees, "ROOF")
+    if hole:
+        slab_with_hole(b, f"{name}-floor", frame, width, height, base_z, hole)
+    else:
+        b.slab(f"{name}-floor", *frame.centre(width / 2, height / 2),
+               base_z, width, height, degrees)
 
     # Perimeter. The west side is where this block joins whatever precedes it.
     b.wall(f"{name}-w", corner(0, 0), corner(0, height),
-           gaps=[(height / 2, DOOR_W)] if west_gap else ())
+           gaps=[(height / 2, DOOR_W)] if west_gap else (), base_z=base_z)
     if name != "spine":
-        b.wall(f"{name}-e", corner(width, 0), corner(width, height))
-    b.wall(f"{name}-s", corner(0, 0), corner(width, 0))
-    b.wall(f"{name}-n", corner(0, height), corner(width, height))
+        b.wall(f"{name}-e", corner(width, 0), corner(width, height), base_z=base_z)
+    b.wall(f"{name}-s", corner(0, 0), corner(width, 0), base_z=base_z)
+    b.wall(f"{name}-n", corner(0, height), corner(width, height), base_z=base_z)
     if west_gap:
-        b.door(f"{name}-door-w", corner(0, 0), corner(0, height), height / 2)
+        b.door(f"{name}-door-w", corner(0, 0), corner(0, height), height / 2, base_z)
 
     for column in range(1, cols):
         x = column * cell_x
@@ -205,17 +317,17 @@ def block(b, name, frame, cols, rows, cell_x, cell_y, west_gap=True):
         # One doorway per room the partition separates, so every room has a way
         # out and reachability is a question about the conversion, not the plan.
         gaps = [((row + 0.5) * cell_y, DOOR_W) for row in range(rows)]
-        b.wall(f"{name}-v{column}", a, z, gaps=gaps)
+        b.wall(f"{name}-v{column}", a, z, gaps=gaps, base_z=base_z)
         for centre, _ in gaps:
-            b.door(f"{name}-door-v{column}-{centre:.0f}", a, z, centre)
+            b.door(f"{name}-door-v{column}-{centre:.0f}", a, z, centre, base_z)
 
     for row in range(1, rows):
         y = row * cell_y
         a, z = corner(0, y), corner(width, y)
         gaps = [((column + 0.5) * cell_x, DOOR_W) for column in range(cols)]
-        b.wall(f"{name}-h{row}", a, z, gaps=gaps)
+        b.wall(f"{name}-h{row}", a, z, gaps=gaps, base_z=base_z)
         for centre, _ in gaps:
-            b.door(f"{name}-door-h{row}-{centre:.0f}", a, z, centre)
+            b.door(f"{name}-door-h{row}-{centre:.0f}", a, z, centre, base_z)
 
 
 class Frame:
@@ -233,27 +345,45 @@ class Frame:
         return self.at(x, y)
 
 
-def build(path: Path, wing_degrees: float) -> None:
+STOREY = SLAB_T + WALL_H
+
+
+def build(path: Path, wing_degrees: float, storeys: int = 1) -> None:
     b = Builder()
 
-    # Spine: 4 x 3 rooms of 10 x 5.5 m, on the grid.
-    spine = Frame(0.0, 0.0, 0.0)
-    block(b, "spine", spine, cols=4, rows=3, cell_x=10.0, cell_y=5.5)
-
-    # Wing: 3 x 2 rooms of 10 x 7 m, hinged on the spine's east wall. The only
-    # way in is through that wall, so "can you reach the wing" is a real
-    # question the walk audit has to answer.
     spine_w, spine_h = 4 * 10.0, 3 * 5.5
+    spine = Frame(0.0, 0.0, 0.0)
     wing = Frame(*spine.at(spine_w, spine_h / 2 - 7.0), wing_degrees)
-    block(b, "wing", wing, cols=3, rows=2, cell_x=10.0, cell_y=7.0)
 
-    # The seam: an opening through the spine's east wall into the wing's west.
-    seam_a, seam_b = spine.at(spine_w, 0), spine.at(spine_w, spine_h)
-    b.wall("spine-seam", seam_a, seam_b, gaps=[(spine_h / 2, DOOR_W)])
-    b.door("door-seam", seam_a, seam_b, spine_h / 2)
+    # The stairwell: a hole through every slab above the ground floor, in the
+    # spine's east end, with the stair standing in it.
+    hole = (30.0, 1.0, 37.0, 8.0)
+
+    for level in range(storeys):
+        base = level * STOREY
+        block(b, f"spine{level}", spine, cols=4, rows=3, cell_x=10.0, cell_y=5.5,
+              base_z=base, hole=hole if level else None)
+        block(b, f"wing{level}", wing, cols=3, rows=2, cell_x=10.0, cell_y=7.0,
+              base_z=base)
+        seam_a, seam_b = spine.at(spine_w, 0), spine.at(spine_w, spine_h)
+        b.wall(f"spine{level}-seam", seam_a, seam_b,
+               gaps=[(spine_h / 2, DOOR_W)], base_z=base)
+        b.door(f"door-seam{level}", seam_a, seam_b, spine_h / 2, base)
+
+        if level + 1 < storeys:
+            # Rises into the hole in the slab above it, and turns halfway.
+            b.stair(f"stair{level}", base + SLAB_T, base + STOREY + SLAB_T,
+                    start=spine.at(31.0, 2.5), run_dir=(1.0, 0.0), turn_dir=(0.0, 1.0))
+
+    # Roof over the top storey.
+    top = storeys * STOREY
+    b.slab("roof-spine", *spine.at(spine_w / 2, spine_h / 2), top,
+           spine_w, spine_h, 0.0, "ROOF")
+    b.slab("roof-wing", *wing.at(15.0, 7.0), top, 30.0, 14.0, wing_degrees, "ROOF")
 
     b.write(path)
-    print(f"wrote {path}: {len(b.products)} products, wing at {wing_degrees:g} degrees")
+    print(f"wrote {path}: {len(b.products)} products, {storeys} storey(s), "
+          f"wing at {wing_degrees:g} degrees")
 
 
 def reshape_as_recovery(source: Path, out: Path) -> None:
@@ -334,10 +464,12 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--wing-degrees", type=float, default=58.0,
                     help="0 for the on-grid control")
+    ap.add_argument("--storeys", type=int, default=1,
+                    help="2 or more adds a stairwell with an L-shaped stair")
     ap.add_argument("--shared-placement", action="store_true",
                     help="also write a copy shaped the way an RVT recovery writes one")
     args = ap.parse_args()
-    build(args.out, args.wing_degrees)
+    build(args.out, args.wing_degrees, args.storeys)
     if args.shared_placement:
         reshape_as_recovery(args.out, args.out.with_name(args.out.stem + "-recovery.ifc"))
     return 0

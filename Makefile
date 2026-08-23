@@ -14,7 +14,7 @@ WORLD ?= out/unbc_1m
 MCWEB_WORLD ?= $(WORLD)
 
 .PHONY: help setup parser-setup parser-check contract rectify-preview \
-        fixture fixture-recovery walk p1 p05 all voxels rvt \
+        fixture fixture-recovery walk inspect p1 p05 all voxels rvt \
         viewer mcweb blockcraft blockcraft-static blockcraft-stop clean
 
 help:
@@ -36,6 +36,7 @@ help:
 	@echo "  make fixture           build a small IFC test building with an off-grid wing"
 	@echo "  make fixture-recovery  the same building shaped as an RVT recovery, both walked"
 	@echo "  make walk              first-person walkthrough of WORLD=$(WORLD)"
+	@echo "  make inspect           sweep the interior: cut-off pockets, leaks, stairs"
 	@echo ""
 	@echo "Renderer dev servers (all load WORLD=$(WORLD); override with WORLD=out/unbc_0p5m):"
 	@echo "  make viewer            Three.js inspection viewer      http://127.0.0.1:8765/"
@@ -80,7 +81,8 @@ rectify-preview:
 # -- that the whole pipeline runs on in seconds. The UNBC model is in neither
 # repository; this is what can be regression-tested without it.
 fixture:
-	$(PY) scripts/make_fixture_building.py --out out/fixture/building.ifc --shared-placement
+	$(PY) scripts/make_fixture_building.py --out out/fixture/building.ifc \
+	  --storeys 2 --shared-placement
 	$(PY) scripts/pipeline.py out/fixture/building.ifc --pitch 1.0 \
 	  --name fixture --no-web --no-preview
 
@@ -99,6 +101,11 @@ fixture-recovery: fixture
 walk:
 	$(PY) scripts/walk_voxels.py "$(WORLD)/blocks.csv" --out "$(WORLD)/walk"
 	$(PY) scripts/audit_walkability.py "$(WORLD)/blocks.csv"
+
+# Where the cut-off cells are, where the envelope leaks, whether the stairs
+# bend -- and a view from every region rather than one route.
+inspect:
+	$(PY) scripts/inspect_interior.py "$(WORLD)/blocks.csv" --out "$(WORLD)/inspect" --views 12
 
 # Stage 0 + the whole pipeline, from the proprietary format.
 rvt:

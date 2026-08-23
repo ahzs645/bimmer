@@ -98,6 +98,19 @@ the audit would take — same movement model, from `walk_physics.py`, so
 the walk and the score cannot disagree. A corridor that pinches shut is
 visible in a frame and invisible in a percentage.
 
+## Sweep the interior, not just one route
+
+```sh
+make inspect WORLD=out/fixture
+```
+
+Locates the cut-off pockets rather than counting them, separates the
+roof from the interior (standing on the roof is standable and is not a
+storey at 0% reachable), reports interior cells with open sky above
+them, says how many outdoor cells the player can reach, and per
+stairwell says whether it bends, whether it is connected, and how many
+cells nothing else reaches. Writes a view from each region.
+
 ## After ANY engine change, run this
 
 ```sh
@@ -180,6 +193,13 @@ verifies itself.
   adds cells must check the 2-cell headroom under it.
 - **Saved worlds never run neighbour updates**: fence arms, stair
   shapes, door halves/hinges must be baked into block states at export.
+- **The conversion was not reproducible**: `ifcopenshell.geom.iterator`
+  yields shapes in thread-completion order, and several decisions here
+  are taken by whichever element arrives first. Under load at
+  `--threads 8`, two runs of one file differed by 129 of 6,058 blocks
+  and one of them dropped a whole storey from 99% reachable to 0%.
+  `extract()` now drains the iterator and processes in element order.
+  Any new pass that depends on arrival order will reintroduce this.
 - **Stats can share the bug's blind spot**: the door-hoisting bug passed
   its own metric. Verify with the independent audits + in-client walks.
 - **`blocks_by_id` cannot see a misclassification that overlaps**: a

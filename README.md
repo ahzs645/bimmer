@@ -55,6 +55,7 @@ table, functional doors, per-stage reference, and Minecraft import instructions.
 | `scripts/preview_rectify.py` | see that rectification as a before/after plan, from wall placements alone (seconds, no conversion) |
 | `scripts/walk_physics.py` | the vanilla-Minecraft movement model, shared by everything that walks a world |
 | `scripts/walk_voxels.py` | **walk the converted world** and render what a player sees — frames, a GIF, and the route |
+| `scripts/inspect_interior.py` | sweep the whole interior: where it is cut off, where the envelope leaks, whether stairs bend |
 | `scripts/make_fixture_building.py` | a small IFC test building with an off-grid wing, so the pipeline is testable without the 67 MB model |
 | `renderers/mcweb/` | export the building to a Java world save for the **minecraft-web-client** renderer (real doors/stairs/slabs/fences) |
 | `Makefile` | `setup` / `p1` / `p05` / `all` / `viewer` / `clean` |
