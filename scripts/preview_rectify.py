@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import subprocess
 import sys
 from pathlib import Path
 
@@ -46,6 +47,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rectify import (  # noqa: E402 -- after the sys.path line, deliberately
     WING_HULL_MARGIN_M,
     compute_wing_transforms,
+    on_grid,
+    wall_plan,
     wing_for_point,
     wing_records,
 )
@@ -61,35 +64,6 @@ SPINE = "#9a9a9a"
 # Measured on UNBC, this is about 7% of walls -- the committed
 # docs/rectify_walls_before_after.png shows the same population.
 UNCLAIMED = "#c8b8d8"
-
-
-def wall_plan(model):
-    """Every wall's plan position and true angle, read as the engine reads them.
-
-    The engine folds the angle to mod 90 because it is looking for grid
-    families, and two walls at 10 and 100 degrees belong to the same family.
-    They are not the same *wall*, though -- they are perpendicular -- so the
-    true angle is kept here and folded only where a family is wanted. Drawing
-    from the folded value would render every building as if it had no corners.
-    """
-    from ifcopenshell.util import placement as _placement
-
-    scale = ifcopenshell.util.unit.calculate_unit_scale(model)
-    points, angles = [], []
-    for wall in model.by_type("IfcWall") + model.by_type("IfcWallStandardCase"):
-        try:
-            matrix = _placement.get_local_placement(wall.ObjectPlacement)
-        except Exception:
-            continue
-        points.append((float(matrix[0][3]) * scale, float(matrix[1][3]) * scale))
-        angles.append(math.degrees(math.atan2(matrix[1][0], matrix[0][0])))
-    return np.asarray(points, dtype=float), np.asarray(angles, dtype=float)
-
-
-def on_grid(angles):
-    """Which walls already sit on the voxel grid. The engine's own test."""
-    family = angles % 90.0
-    return (family < 3) | (family > 87)
 
 
 def move(wing, points):
@@ -112,6 +86,69 @@ def clipping(moved, spine, radius=2.0):
         return 0
     squared = ((moved[:, None, :] - spine[None, :, :]) ** 2).sum(2).min(axis=1)
     return int((squared < radius * radius).sum())
+
+
+DAMAGE = "#c1121f"
+SEAM = "#e09f3e"
+# Walls that were ON the grid and are off it afterwards. Membership is a hull
+# test, so a wing sweeps up any axis-aligned wall standing inside its hull and
+# rotates it by the wing's angle -- which takes a wall that voxelized cleanly
+# and makes it jagged. That is the pass doing the exact opposite of its job to
+# a population it never counted.
+KNOCKED = "#7b2cbf"
+
+
+def damage(points, angles, after_angles, after_points, owner, on_axis, wings,
+           clash_m=2.0, joined_m=3.0, parted_m=6.0):
+    """What the move costs, per wall, not per wing.
+
+    The report so far has been the case FOR rectification: wings squared,
+    clipping down. Both of RECTIFY.md's measured costs are per-wall and were
+    invisible here -- walls that end up inside something (27 of them on UNBC,
+    which no rigid motion can separate because the source model interlocks
+    there), and joints pulled apart at the seams, which is what the stitcher
+    then has to bridge and where its corridors come from.
+
+    Returns three boolean masks over the walls: `clashing` after the move,
+    `parted` (was touching the spine, now is not), and `knocked` -- walls that
+    were already on the grid and are off it afterwards, because a wing's hull
+    swept them up and rotated them.
+    """
+    from scipy.spatial import cKDTree
+
+    moved = owner >= 0
+    clashing = np.zeros(len(points), dtype=bool)
+    parted = np.zeros(len(points), dtype=bool)
+    knocked = moved & on_axis & ~on_grid(after_angles)
+    if not moved.any():
+        return clashing, parted, knocked
+
+    spine = points[on_axis & ~moved]
+    spine_tree = cKDTree(spine) if len(spine) else None
+
+    for index in range(len(wings)):
+        rows = owner == index
+        if not rows.any():
+            continue
+        # Everything this wing must not be inside: the spine, plus every other
+        # wing where IT ends up.
+        blocks = [spine] if len(spine) else []
+        for other in range(len(wings)):
+            if other != index and (owner == other).any():
+                blocks.append(after_points[owner == other])
+        if blocks:
+            tree = cKDTree(np.vstack(blocks))
+            clashing[rows] = tree.query(after_points[rows], k=1)[0] < clash_m
+
+        if spine_tree is not None:
+            was = spine_tree.query(points[rows], k=1)[0]
+            now = spine_tree.query(after_points[rows], k=1)[0]
+            # A joint that was in contact and is now well clear. That gap is
+            # not damage in itself -- the stitcher exists for it -- but it is
+            # where the synthesised corridors will have to go.
+            parted[rows] = (was <= joined_m) & (now > parted_m)
+
+    return clashing, parted, knocked
 
 
 def assign(wings, points):
@@ -207,9 +244,11 @@ def svg(points, angles, owner, on_axis, wings, path: Path, long_edge: int = 1400
         '<style>text{font:15px system-ui,-apple-system,sans-serif;fill:#444}'
         '.t{font-size:17px;font-weight:650;fill:#111}</style>',
     ]
-    panels = ((offsets[0], points, angles, "before"),
-              (offsets[1], after_points, after_angles, "after --rectify"))
-    for (ox, oy), data, data_angles, title in panels:
+    clashing, parted, knocked = damage(points, angles, after_angles, after_points,
+                                       owner, on_axis, wings)
+    panels = ((offsets[0], points, angles, "before", False),
+              (offsets[1], after_points, after_angles, "after --rectify", True))
+    for (ox, oy), data, data_angles, title, is_after in panels:
         parts.append(f'<rect x="{ox:.0f}" y="{oy:.0f}" width="{panel_w:.0f}" '
                      f'height="{panel_h:.0f}" fill="#fbfbfc" stroke="#e4e4e8"/>')
         parts.append(f'<text class="t" x="{ox:.0f}" y="{oy - 9:.0f}">{title}</text>')
@@ -219,10 +258,20 @@ def svg(points, angles, owner, on_axis, wings, path: Path, long_edge: int = 1400
                 colour = WING_COLOURS[owner[row] % len(WING_COLOURS)]
             else:
                 colour = SPINE if on_axis[row] else UNCLAIMED
+            width, opacity = stroke, 0.85
+            # Only the after panel carries damage: a clash is a fact about
+            # where the wall ENDS UP, and drawing it on the before panel would
+            # say the move caused something it did not.
+            if is_after and clashing[row]:
+                colour, width, opacity = DAMAGE, stroke * 2.2, 1.0
+            elif is_after and knocked[row]:
+                colour, width, opacity = KNOCKED, stroke * 1.8, 1.0
+            elif is_after and parted[row]:
+                colour, width, opacity = SEAM, stroke * 1.8, 1.0
             parts.append(
                 f'<line x1="{x1[row]:.1f}" y1="{y1[row]:.1f}" x2="{x2[row]:.1f}" '
-                f'y2="{y2[row]:.1f}" stroke="{colour}" stroke-width="{stroke:.1f}" '
-                'stroke-linecap="round" stroke-opacity="0.85"/>')
+                f'y2="{y2[row]:.1f}" stroke="{colour}" stroke-width="{width:.1f}" '
+                f'stroke-linecap="round" stroke-opacity="{opacity}"/>')
 
     # Advance by the label's *rendered* length: `&#176;` is six characters of
     # markup and one degree sign on screen, so counting the source overshoots
@@ -235,6 +284,12 @@ def svg(points, angles, owner, on_axis, wings, path: Path, long_edge: int = 1400
     spine_n = int((on_axis & (owner < 0)).sum())
     loose_n = int((~on_axis & (owner < 0)).sum())
     entries = [(SPINE, f"on-grid spine: {spine_n} walls")]
+    if clashing.any():
+        entries.append((DAMAGE, f"clashing after the move: {int(clashing.sum())} walls"))
+    if knocked.any():
+        entries.append((KNOCKED, f"knocked OFF the grid: {int(knocked.sum())} walls"))
+    if parted.any():
+        entries.append((SEAM, f"seam pulled open: {int(parted.sum())} walls (stitcher's work)"))
     if loose_n:
         entries.append((UNCLAIMED, f"off-grid, no wing: {loose_n} walls (stay jagged)"))
     for index, wing in enumerate(wings):
@@ -256,7 +311,7 @@ def svg(points, angles, owner, on_axis, wings, path: Path, long_edge: int = 1400
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("ifc", nargs="?", type=Path, help="IFC to preview")
+    ap.add_argument("model", nargs="?", type=Path, help=".ifc, or .rvt to parse first")
     ap.add_argument("--svg", type=Path, default=None, help="before/after plan (default: beside the IFC)")
     ap.add_argument("--json", type=Path, default=None, help="the wing transforms, replayable")
     ap.add_argument("--no-svg", action="store_true", help="report only")
@@ -267,17 +322,38 @@ def main() -> int:
     if args.self_test:
         return self_test()
 
-    if not args.ifc:
-        ap.error("give an IFC file, or --self-test")
+    if not args.model:
+        ap.error("give an .ifc or .rvt file, or --self-test")
 
-    model = ifcopenshell.open(str(args.ifc))
-    points, angles = wall_plan(model)
+    source_file = args.model.expanduser().resolve()
+    if source_file.suffix.lower() == ".rvt":
+        # Rectification reads walls and nothing else, so this is the one stage
+        # that works off an RVT recovery whether or not the parser's IFC would
+        # clear the voxel engine's contract. --skip-contract says so rather
+        # than failing a preview on a gate about something else entirely.
+        ifc = source_file.with_suffix(".preview.ifc")
+        print(f"parsing {source_file.name} -> {ifc.name}", flush=True)
+        result = subprocess.run([sys.executable, str(Path(__file__).with_name("rvt_to_ifc.py")),
+                                 str(source_file), "--out", str(ifc), "--skip-contract"])
+        if result.returncode != 0:
+            raise SystemExit("\nrectify preview: the parser failed; its error is above.")
+        args.model = ifc
+
+    model = ifcopenshell.open(str(args.model))
+    points, angles, source = wall_plan(model)
     if not len(points):
-        raise SystemExit(f"{args.ifc.name} has no readable IfcWall placements; "
+        raise SystemExit(f"{args.model.name} has no readable walls; "
                          "nothing to rectify and nothing to preview.")
+    if source == "degenerate-placements-no-geometry":
+        raise SystemExit(
+            f"{args.model.name} puts every wall on one shared placement and carries no "
+            "tessellated wall bodies, so where its walls are cannot be read.\n"
+            "Rectification would report 100% axis-aligned and silently do nothing.")
 
+    where = {"placements": "per-element placements",
+             "tessellation": "wall footprints (the file shares one placement)"}[source]
     on_axis = on_grid(angles)
-    print(f"{len(points):,} walls; {on_axis.sum():,} axis-aligned "
+    print(f"{len(points):,} walls, read from {where}; {on_axis.sum():,} axis-aligned "
           f"({on_axis.mean():.0%}), {(~on_axis).sum():,} off-grid")
 
     wings = compute_wing_transforms(model)
@@ -287,7 +363,11 @@ def main() -> int:
         return 0
 
     owner = assign(wings, points)
-    spine = points[on_axis]
+    # The spine is what does NOT move. An axis-aligned wall inside a wing's
+    # hull travels with the wing, so scoring the wing against it counts the
+    # wing against itself -- which is why this line and the damage line below
+    # used to disagree about the same building.
+    spine = points[on_axis & (owner < 0)]
     print(f"\n{len(wings)} wing(s):")
     for index, wing in enumerate(wings):
         rows = owner == index
@@ -303,10 +383,29 @@ def main() -> int:
     print(f"\n{claimed:,} of {len(points):,} walls ({claimed / len(points):.0%}) "
           "are inside a wing and would move.")
 
+    after_points = points.copy()
+    for index, wing in enumerate(wings):
+        rows = owner == index
+        if rows.any():
+            after_points[rows] = move(wing, points[rows])
+    after_angles = angles.copy()
+    for index, wing in enumerate(wings):
+        rows = owner == index
+        after_angles[rows] = angles[rows] + wing["deg"]
+    clashing, parted, knocked = damage(points, angles, after_angles, after_points,
+                                       owner, on_axis, wings)
+    print("\nwhat it costs:")
+    print(f"  {int(knocked.sum())} wall(s) were ALREADY on the grid and are rotated off it "
+          "-- swept up by a wing's hull and squared to the wrong frame")
+    print(f"  {int(clashing.sum())} wall(s) end up within 2 m of the spine or another "
+          "wing (no rigid motion separates a model that interlocks there)")
+    print(f"  {int(parted.sum())} wall(s) were touching the spine and are now clear of it "
+          "-- the seams the stitcher has to bridge")
+
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps({
-            "input_ifc": str(args.ifc),
+            "input": str(args.model),
             "walls": int(len(points)),
             "axis_aligned": int(on_axis.sum()),
             "hull_margin_m": WING_HULL_MARGIN_M,
@@ -317,7 +416,7 @@ def main() -> int:
         print(f"wrote {args.json}")
 
     if not args.no_svg:
-        out = args.svg or args.ifc.with_suffix(".rectify.svg")
+        out = args.svg or args.model.with_suffix(".rectify.svg")
         svg(points, angles, owner, on_axis, wings, out)
         print(f"wrote {out}")
     return 0
@@ -391,6 +490,132 @@ def _two_grid_fixture(path: Path, wing_degrees: float = 58.0) -> None:
     model.write(str(path))
 
 
+def _two_wing_fixture(path: Path) -> None:
+    """A spine and two wings at DIFFERENT angles, placed close together.
+
+    One wing cannot catch either of the faults this exercises. A single family
+    hides a wing being rotated by another family's angle, because there is only
+    one angle; and a single wing hides every wing being squared while blind to
+    its neighbours, because there is no neighbour.
+    """
+    import uuid
+
+    model = ifcopenshell.file(schema="IFC4")
+    guid = lambda: ifcopenshell.guid.compress(uuid.uuid4().hex)  # noqa: E731
+
+    org = model.create_entity("IfcOrganization", Name="fixture")
+    history = model.create_entity(
+        "IfcOwnerHistory",
+        model.create_entity("IfcPersonAndOrganization",
+                            model.create_entity("IfcPerson", FamilyName="fixture"), org),
+        model.create_entity("IfcApplication", org, "1", "two-wing fixture", "fixture"),
+        ChangeAction="NOCHANGE", CreationDate=0)
+    metre = model.create_entity("IfcSIUnit", UnitType="LENGTHUNIT", Name="METRE")
+    origin = model.create_entity("IfcCartesianPoint", (0.0, 0.0, 0.0))
+    axis = model.create_entity("IfcAxis2Placement3D", origin)
+    context = model.create_entity(
+        "IfcGeometricRepresentationContext", ContextType="Model",
+        CoordinateSpaceDimension=3, Precision=1e-5, WorldCoordinateSystem=axis)
+    model.create_entity("IfcProject", guid(), history, "fixture",
+                        RepresentationContexts=[context],
+                        UnitsInContext=model.create_entity("IfcUnitAssignment", [metre]))
+
+    def wall(x: float, y: float, degrees: float) -> None:
+        radians = math.radians(degrees)
+        placement = model.create_entity("IfcLocalPlacement", RelativePlacement=(
+            model.create_entity(
+                "IfcAxis2Placement3D",
+                model.create_entity("IfcCartesianPoint", (x, y, 0.0)), None,
+                model.create_entity("IfcDirection",
+                                    (math.cos(radians), math.sin(radians), 0.0)))))
+        model.create_entity("IfcWall", guid(), history, f"wall {x:.0f},{y:.0f}",
+                            ObjectPlacement=placement)
+
+    for column in range(20):
+        for row in range(15):
+            wall(column * 4.0, row * 4.0, 0.0 if row % 2 else 90.0)
+
+    def block(ox: float, oy: float, degrees: float) -> None:
+        radians = math.radians(degrees)
+        for column in range(20):
+            for row in range(15):
+                lx, ly = column * 4.0, row * 4.0
+                wall(ox + lx * math.cos(radians) - ly * math.sin(radians),
+                     oy + lx * math.sin(radians) + ly * math.cos(radians),
+                     degrees + (0.0 if row % 2 else 90.0))
+
+    block(175.0, 10.0, 58.0)     # one family
+    block(150.0, 150.0, 35.0)    # a different one, near enough to interfere
+    model.write(str(path))
+
+
+def _shared_placement_fixture(path: Path, wing_degrees: float = 58.0) -> None:
+    """The same building written the way an RVT recovery writes it.
+
+    One `IfcLocalPlacement` for every product, and the wall's real position and
+    rotation baked into an `IfcTriangulatedFaceSet` in world coordinates. Read
+    through placements this file is 600 walls at one point at zero degrees --
+    a perfectly grid-aligned building with nothing to rectify.
+    """
+    import uuid
+
+    model = ifcopenshell.file(schema="IFC4")
+    guid = lambda: ifcopenshell.guid.compress(uuid.uuid4().hex)  # noqa: E731
+
+    org = model.create_entity("IfcOrganization", Name="fixture")
+    history = model.create_entity(
+        "IfcOwnerHistory",
+        model.create_entity("IfcPersonAndOrganization",
+                            model.create_entity("IfcPerson", FamilyName="fixture"), org),
+        model.create_entity("IfcApplication", org, "1", "shared-placement fixture", "fixture"),
+        ChangeAction="NOCHANGE", CreationDate=0)
+    metre = model.create_entity("IfcSIUnit", UnitType="LENGTHUNIT", Name="METRE")
+    origin = model.create_entity("IfcCartesianPoint", (0.0, 0.0, 0.0))
+    axis = model.create_entity("IfcAxis2Placement3D", origin)
+    context = model.create_entity(
+        "IfcGeometricRepresentationContext", ContextType="Model",
+        CoordinateSpaceDimension=3, Precision=1e-5, WorldCoordinateSystem=axis)
+    body = model.create_entity(
+        "IfcGeometricRepresentationSubContext", ContextIdentifier="Body",
+        ContextType="Model", ParentContext=context, TargetView="MODEL_VIEW")
+    model.create_entity("IfcProject", guid(), history, "fixture",
+                        RepresentationContexts=[context],
+                        UnitsInContext=model.create_entity("IfcUnitAssignment", [metre]))
+    # THE point of this fixture: one placement, shared by every wall.
+    shared = model.create_entity("IfcLocalPlacement", RelativePlacement=axis)
+
+    def wall(x: float, y: float, degrees: float) -> None:
+        radians = math.radians(degrees)
+        c, s_ = math.cos(radians), math.sin(radians)
+        corners = [(-3.6, -0.15), (3.6, -0.15), (3.6, 0.15), (-3.6, 0.15)]
+        base = [(x + lx * c - ly * s_, y + lx * s_ + ly * c) for lx, ly in corners]
+        coords = [(px, py, 0.0) for px, py in base] + [(px, py, 3.0) for px, py in base]
+        face_set = model.create_entity(
+            "IfcTriangulatedFaceSet",
+            model.create_entity("IfcCartesianPointList3D", coords),
+            Closed=False,
+            CoordIndex=[(1, 2, 3), (1, 3, 4), (5, 6, 7), (5, 7, 8)])
+        shape = model.create_entity(
+            "IfcShapeRepresentation", body, "Body", "Tessellation", [face_set])
+        model.create_entity(
+            "IfcWall", guid(), history, f"wall {x:.0f},{y:.0f}",
+            ObjectPlacement=shared,
+            Representation=model.create_entity("IfcProductDefinitionShape", None, None, [shape]))
+
+    for column in range(20):
+        for row in range(15):
+            wall(column * 4.0, row * 4.0, 0.0 if row % 2 else 90.0)
+    radians = math.radians(wing_degrees)
+    for column in range(20):
+        for row in range(15):
+            local_x, local_y = column * 4.0, row * 4.0
+            wall(175.0 + local_x * math.cos(radians) - local_y * math.sin(radians),
+                 10.0 + local_x * math.sin(radians) + local_y * math.cos(radians),
+                 wing_degrees + (0.0 if row % 2 else 90.0))
+
+    model.write(str(path))
+
+
 def self_test() -> int:
     import tempfile
 
@@ -406,7 +631,8 @@ def self_test() -> int:
         _two_grid_fixture(fixture)
 
         model = ifcopenshell.open(str(fixture))
-        points, angles = wall_plan(model)
+        points, angles, source = wall_plan(model)
+        expect(source == "placements", f"the fixture uses per-element placements, got {source}")
         expect(len(points) == 624, f"fixture should hold 624 walls, read {len(points)}")
 
         on_axis = on_grid(angles)
@@ -454,6 +680,61 @@ def self_test() -> int:
             expect(UNCLAIMED in text,
                    "off-grid walls in no wing must not be coloured as on-grid spine")
             expect("stay jagged" in text, "and the legend must say what they are")
+
+        # The same building written the way an RVT recovery writes it. Read
+        # through placements it is 600 walls at one point at zero degrees, and
+        # rectification is a no-op that reports success -- which is exactly how
+        # this went unnoticed until the two producers were compared.
+        shared = tmp / "shared-placement.ifc"
+        _shared_placement_fixture(shared)
+        shared_model = ifcopenshell.open(str(shared))
+
+        from ifcopenshell.util import placement as _placement  # noqa: PLC0415
+        matrices = {tuple(np.asarray(_placement.get_local_placement(w.ObjectPlacement))
+                          .round(6).ravel())
+                    for w in shared_model.by_type("IfcWall")}
+        expect(len(matrices) == 1,
+               "the fixture must share ONE placement, or it is not testing the fallback")
+
+        shared_points, shared_angles, shared_source = wall_plan(shared_model)
+        expect(shared_source == "tessellation",
+               f"a shared-placement file must fall back to footprints, got {shared_source}")
+        expect(len(shared_points) == 600,
+               f"all 600 walls should be recovered, got {len(shared_points)}")
+        shared_on_axis = on_grid(shared_angles)
+        expect(int(shared_on_axis.sum()) == 300,
+               f"300 on-grid expected, got {int(shared_on_axis.sum())} -- "
+               "all 600 means the placements were trusted")
+
+        shared_wings = compute_wing_transforms(shared_model)
+        expect(len(shared_wings) == 1,
+               f"the wing must be found from footprints too, found {len(shared_wings)}")
+
+        # Two wings at different angles, close enough to interfere.
+        pair = tmp / "two-wing.ifc"
+        _two_wing_fixture(pair)
+        pair_model = ifcopenshell.open(str(pair))
+        pair_points, pair_angles, _ = wall_plan(pair_model)
+        pair_wings = compute_wing_transforms(pair_model)
+        expect(len(pair_wings) == 2, f"two wings expected, found {len(pair_wings)}")
+
+        if len(pair_wings) == 2:
+            # Each wing must be squared by ITS OWN family's angle. When the
+            # family did not travel with its cluster, both got the last one.
+            squared = [abs((wing["deg"] + angle) % 90.0) < 2.0
+                       or abs((wing["deg"] + angle) % 90.0 - 90.0) < 2.0
+                       for wing, angle in zip(pair_wings, (58.0, 35.0))]
+            rotations = [round(w["deg"], 1) for w in pair_wings]
+            expect(len({round(w["deg"], 1) for w in pair_wings}) == 2,
+                   f"two families must give two rotations, got {rotations}")
+            expect(all(squared), f"each wing must land on the grid, rotations {rotations}")
+
+            # And having moved, the wings must not be inside each other.
+            pair_owner = assign(pair_wings, pair_points)
+            moved = [move(w, pair_points[pair_owner == i]) for i, w in enumerate(pair_wings)]
+            expect(clipping(moved[0], moved[1]) == 0,
+                   f"the two wings overlap after placement: "
+                   f"{clipping(moved[0], moved[1])} walls within 2 m of the other wing")
 
     if failures:
         print("self-test FAILED")

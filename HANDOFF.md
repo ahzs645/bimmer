@@ -186,6 +186,13 @@ verifies itself.
   reading one spelling fails *silently* on the other — `getattr`
   returns None and spiral synthesis just stops. The UNBC export is
   IFC2X3; Reviter writes IFC4. Assume this is not the only rename.
+- **Not every producer writes per-element placements**: Reviter puts
+  every product on ONE shared placement with world coordinates in the
+  geometry, so anything reading `IfcLocalPlacement` sees the whole
+  building at one point at zero degrees. That made `--rectify` a
+  silent no-op on the RVT path — 100% axis-aligned, zero wings,
+  success reported. `rectify.wall_plan` now falls back to footprints.
+  Assume any other placement-based pass has the same hole.
 - **This dev container rolls back between sessions**: `git fetch +
   checkout -B <branch> origin/<branch>` before touching anything, and
   push every finished step. `out/` is disposable; rebuild it.

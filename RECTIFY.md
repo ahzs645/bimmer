@@ -98,9 +98,13 @@ validity rule) rather than deleting it.
 
 ```sh
 make rectify-preview IFC="model.ifc"
-# or: python3 scripts/preview_rectify.py model.ifc --svg out/r.svg --json out/wings.json
+python3 scripts/preview_rectify.py model.rvt      # parses the RVT first
 python3 scripts/preview_rectify.py --self-test    # needs no model
 ```
+
+It takes a `.rvt` as well as an `.ifc`. Rectification reads walls and nothing
+else, so it is the one stage that works off an RVT recovery whether or not that
+recovery's IFC would clear the voxel engine's contract.
 
 The two figures above are the real campus from a real run, and they are better
 evidence than any synthetic check. What they are not is reproducible: they were
@@ -129,6 +133,63 @@ figure above shows the same three populations.
 
 The preview covers Phase 1 only. Seam stitching runs later against the voxel
 grid and cannot be known from placements.
+
+### Reading the walls: two producers, one silent failure
+
+`compute_wing_transforms` read wall positions from `IfcLocalPlacement`. That
+works for Revit's own exporter, which gives every wall its own placement. It
+does not work for an RVT recovery: **Reviter puts every product on one shared
+placement and bakes world coordinates into the geometry**, so all 600 walls of a
+test building read as sitting at one point at zero degrees. The pass then found
+100% axis-aligned walls, no off-axis family, and **no wings** — `--rectify`
+became a no-op that reported success.
+
+Measured on the same two-grid building through both producers:
+
+| read from | walls | axis-aligned | wings found |
+|---|---:|---:|---:|
+| per-element placements | 600 | 300 (50%) | 1 |
+| one shared placement, before the fix | 600 | **600 (100%)** | **0** |
+| one shared placement, footprints | 600 | 300 (50%) | 1 |
+
+`wall_plan` now uses the placements only when they actually distinguish the
+walls, and reads each wall's footprint otherwise — its plan centroid, and its
+first principal axis as the angle. Footprints come straight off
+`IfcTriangulatedFaceSet`/`IfcPolygonalFaceSet` coordinate lists, so this costs
+attribute access rather than a mesh. A file that offers neither now says so
+instead of returning a perfectly grid-aligned building.
+
+### What it costs, per wall
+
+The report used to be entirely the case *for* rectification. Three costs are
+now measured and drawn:
+
+- **Walls knocked OFF the grid.** Wing membership is a convex-hull test, so a
+  wing sweeps up any already-on-grid wall standing inside its hull and rotates
+  it by the wing's angle. On a fixture with 300 wing walls, **89 on-grid walls
+  are rotated off the grid** — the pass doing the exact opposite of its job to a
+  population it never counted. The refinement is to exclude a hull-interior wall
+  whose own angle family is the spine's, unless it is structurally attached to
+  the wing; that changes which elements move at extract time, so it wants
+  measuring on the real model before it is switched on.
+- **Walls clashing after the move**, against the spine *and* the other wings.
+- **Seams pulled open** — walls that were touching the spine and are now clear
+  of it. Not damage in itself; it is where the stitcher's corridors come from.
+
+### Two fixes to the scoring
+
+Both made every wing look cleaner than it was:
+
+- The collision target was `P[on_axis][::3]` — **every third** on-grid wall.
+  The subsample existed only because the score was an O(n·m) distance matrix; a
+  KD-tree makes the full set cheaper than the subsample was.
+- Wings were scored **only against the spine**, so six wings were each squared
+  while blind to one another — a wing shoved five metres to clear the spine
+  could be shoved straight into its neighbour and score zero for it. Wings are
+  now placed in order, each scored against the spine, the wings already placed,
+  and the wings not yet placed where they still stand. On a two-wing fixture the
+  old scoring leaves **9 walls inside the neighbouring wing**; the new scoring
+  leaves none.
 
 ## Status: Phase 1 is implemented (`--rectify`)
 
