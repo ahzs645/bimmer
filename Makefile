@@ -14,7 +14,7 @@ WORLD ?= out/unbc_1m
 MCWEB_WORLD ?= $(WORLD)
 
 .PHONY: help setup parser-setup parser-check contract rectify-preview \
-        fixture fixture-recovery walk inspect confirm selftest p1 p05 all voxels rvt \
+        fixture fixture-recovery walk inspect confirm selftest rectify-plan p1 p05 all voxels rvt \
         viewer mcweb blockcraft blockcraft-static blockcraft-stop clean
 
 help:
@@ -31,6 +31,7 @@ help:
 	@echo "  make rvt               RVT=$(RVT) straight through to a world"
 	@echo "  make contract          grade IFC=... against what the engine reads"
 	@echo "  make rectify-preview   see what --rectify would do to IFC=..., in seconds"
+	@echo "  make rectify-plan      the same wings drawn as an architectural plan, by the parser"
 	@echo ""
 	@echo "Checking a build by walking it (no model, no client, no network):"
 	@echo "  make fixture           build a small IFC test building with an off-grid wing"
@@ -125,6 +126,18 @@ selftest:
 	$(PY) scripts/preview_rectify.py --self-test
 	$(PY) scripts/check_ifc_contract.py --self-test
 	$(PY) scripts/rvt_to_ifc.py --self-test
+
+# The same wing transforms, drawn by the PARSER's floor viewer instead of by
+# the stick diagram here: real wall poche, door swings, stair arrows. Reads the
+# RVT directly, so it needs the submodule and its deps (make parser-setup).
+RECTIFY_PLAN_OUT ?= out/rectify-plan
+rectify-plan:
+	$(PY) scripts/preview_rectify.py "$(IFC)" --json $(RECTIFY_PLAN_OUT)/wings.json --no-svg
+	cd parsers/reviter && node --experimental-strip-types --max-old-space-size=6000 \
+	  scripts/rectify-plan.ts "$(CURDIR)/$(RVT)" \
+	  --wings "$(CURDIR)/$(RECTIFY_PLAN_OUT)/wings.json" \
+	  --out-dir "$(CURDIR)/$(RECTIFY_PLAN_OUT)"
+	@echo "SVGs in $(RECTIFY_PLAN_OUT); rasterise with parsers/reviter/scripts/render-svg.ts"
 
 # Stage 0 + the whole pipeline, from the proprietary format.
 rvt:

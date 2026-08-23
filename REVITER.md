@@ -398,12 +398,42 @@ looser. Nothing about the path breaks: **the 16-rise switchback survives
 rectification in the recovered model too**, at (195, 59), walking 17 stand cells
 with x reversing at y=5 and y=10 and y never dropping.
 
-> Checked with the **plan renderer in this repo**, `preview_rectify`, pointed at
-> the recovered IFC. Reviter's own Studio viewer draws the RVT recovery in
-> three.js and has no notion of an IFC or of a wing transform, so it cannot show
-> a rectified model as it stands; applying the wing transforms to the geometry
-> `scripts/extract-geometry.ts` emits would put it in that viewer, and is a
-> self-contained change on the Reviter side if it is wanted.
+### 2f. Drawn by Reviter's floor viewer
+
+The stick diagram above is this repo's own drawing of wall footprints. Reviter
+has a real architectural floor plan — wall poché, door swings, stair arrows, a
+scale bar — and rectification should be looked at there, because a plan that
+squares up is a plan an architect can read and a stick diagram is not.
+
+`make rectify-plan` does it end to end: `preview_rectify --json` writes the wing
+transforms, and Reviter's `scripts/rectify-plan.ts` decodes the RVT once,
+applies them to the recovered model's plan coordinates, and calls
+`makeArchitecturalFloorSvg` — the same function the studio's floor viewer calls.
+`docs/confirm_rectify_floor_plan.png` is level 694 before and after.
+
+**It squares up.** Four wings at +32 degrees and one at -58 arrive axis-aligned,
+rooms and corridors and stairs with them, and the spine is untouched. The cost
+is visible in the same drawing: the links between wing and spine stretch into
+thin diagonals, which is `preview_rectify`'s "70 walls, seams pulled open" and
+the tear that `close_seam_walls` closes in the voxel build.
+
+Two things were wrong before that drawing was legible, and both are worth
+knowing because neither shows up in a number:
+
+- The plan caches records and finished SVGs in WeakMaps keyed on the
+  `ConvertResult`. Rewriting coordinates **in place** therefore draws the plan
+  it drew before — the first run produced a "before" and an "after" that were
+  byte-identical. It returns a copy now.
+- A wall is drawn from its **location line and joined end corners**, not from
+  its bounding box. Moving `orientedBox`, `loops` and `boundsFeet` and leaving
+  `solid` alone moved every floor and left every wall standing where it was —
+  which is, exactly, the defect this project spent two rounds fixing in the
+  voxel engine, reproduced in a different renderer by the same mistake.
+
+> Reviter's three.js Studio viewer is a separate thing again: it draws the
+> recovery's meshes, and this transform deliberately does not touch them, so the
+> 3D view still shows the building as surveyed. Rectifying the meshes too would
+> put the squared building in that viewer, and is a self-contained follow-on.
 
 The pin has since been moved onto the branch carrying both fixes (§0).
 
