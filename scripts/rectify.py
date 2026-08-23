@@ -415,6 +415,118 @@ def apply_wings_piecewise(wings, v, f, max_edge=0.5, margin=WING_HULL_MARGIN_M):
     return moved, np.arange(len(moved), dtype=np.int64).reshape(-1, 3)
 
 
+def adjacency_claims(elements, wings, touch_m=0.6, reach_m=6.0, rounds=3,
+                     margin=WING_HULL_MARGIN_M):
+    """Elements the hull missed that are JOINED to elements it claimed.
+
+    A wing's hull is the convex hull of its WALL placements. A curtain wall is
+    not a wall: `IfcPlate` panels and `IfcMember` mullions are their own
+    elements hanging on the facade, so the hull never encloses them. The wall
+    behind the glazing rotates 32 degrees and the glazing stays where it was,
+    driven through the rooms that moved. Audited against the recovered model's
+    own architectural plan, that is 409 of 605 findings -- mullions and panels,
+    at the same plan position on storey after storey -- and it is also why
+    glass voxels fall 5% under `--rectify` while the per-triangle assignment
+    recovers none of them: there was nothing in the hull to cut.
+
+    Widening the margin would sweep them in and sweep in the spine's walls with
+    them, which is the cost the report already calls "knocked OFF the grid".
+    This claims by CONTACT instead: an element the hull missed travels with the
+    wing when it touches something the wing claimed. 81% of the findings sit
+    within 2 m of a hull edge and 96% within 5, so `reach_m` bounds the claim to
+    the hull's own neighbourhood and the cascade cannot walk off across the
+    building.
+
+    `elements` is (id, verts) with verts in world metres. Returns {id: wing}.
+    """
+    if not wings:
+        return {}
+
+    boxes: dict[int, tuple] = {}
+    seeds: dict[int, dict] = {}
+    for element_id, verts in elements:
+        if not len(verts):
+            continue
+        lo = verts.min(axis=0)
+        hi = verts.max(axis=0)
+        boxes[element_id] = (lo[0], lo[1], lo[2], hi[0], hi[1], hi[2])
+        # Claimed already if ANY vertex is inside a hull -- the same test the
+        # per-triangle assignment makes, asked once for the whole element.
+        for wing in wings:
+            inside = np.ones(len(verts), dtype=bool)
+            for e in wing["eqs"]:
+                inside &= (e[0] * verts[:, 0] + e[1] * verts[:, 1] + e[2] <= margin)
+                if not inside.any():
+                    break
+            if inside.any():
+                seeds[element_id] = wing
+                break
+
+    def whole_box_slack(box):
+        """How far the element's FARTHEST corner sits outside the nearest hull.
+
+        The farthest corner, not the nearest, and that is the difference
+        between claiming a mullion and dragging the spine. Contact is tested on
+        bounding boxes, so a forty-metre corridor wall that happens to touch a
+        wing at one end touches it by its box too -- and being claimed, the
+        whole corridor swings 32 degrees away. Measured on the fixture: with a
+        nearest-corner test the pass claimed 34 elements and opened 138
+        see-through cells in a building that had none. Requiring ALL of an
+        element to sit in the hull's neighbourhood keeps the small things that
+        hang on a facade and leaves the long things that merely reach it.
+        """
+        best = None
+        for wing in wings:
+            worst = max(
+                max(e[0] * x + e[1] * y for x in (box[0], box[3]) for y in (box[1], box[4])) + e[2]
+                for e in wing["eqs"])
+            slack = worst - margin
+            best = slack if best is None else min(best, slack)
+        return best
+
+    candidates = {i: b for i, b in boxes.items()
+                  if i not in seeds and whole_box_slack(b) <= reach_m}
+    if not candidates:
+        return {}
+
+    cell = max(2.0, touch_m * 8)
+
+    def cells_of(box):
+        for x in range(int((box[0] - touch_m) // cell), int((box[3] + touch_m) // cell) + 1):
+            for y in range(int((box[1] - touch_m) // cell), int((box[4] + touch_m) // cell) + 1):
+                yield (x, y)
+
+    def touches(a, b):
+        return (a[0] - touch_m <= b[3] and b[0] - touch_m <= a[3]
+                and a[1] - touch_m <= b[4] and b[1] - touch_m <= a[4]
+                and a[2] - touch_m <= b[5] and b[2] - touch_m <= a[5])
+
+    claims: dict[int, dict] = {}
+    frontier = dict(seeds)
+    for _ in range(rounds):
+        if not frontier or not candidates:
+            break
+        index: dict[tuple, list] = {}
+        for element_id, wing in frontier.items():
+            for key in cells_of(boxes[element_id]):
+                index.setdefault(key, []).append((element_id, wing))
+        won: dict[int, dict] = {}
+        for element_id, box in candidates.items():
+            for key in cells_of(box):
+                hit = next((wing for other, wing in index.get(key, ())
+                            if touches(box, boxes[other])), None)
+                if hit is not None:
+                    won[element_id] = hit
+                    break
+        if not won:
+            break
+        claims.update(won)
+        for element_id in won:
+            candidates.pop(element_id, None)
+        frontier = won
+    return claims
+
+
 def apply_wing(w, v):
     """Rigidly rotate (and push-apart shift) verts about the wing pivot."""
     px, py = w["pivot"]

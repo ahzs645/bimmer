@@ -472,11 +472,22 @@ none of them.** The curtain wall was never in the hull to be cut.
 
 `docs/confirm_left_behind.png` shows three of them on level 694.
 
-The fix is on this side of the seam, in `scripts/rectify.py`: either build the
-hull from the curtain-wall families as well as `IfcWall`, or propagate wing
-membership through adjacency, so anything joined to a wing travels with it. The
-second is the one that generalises — it is the same rule as "an aggregate moves
-whole", applied to joins rather than to decomposition.
+**Fixed, and the audit says how far.** `adjacency_claims` (bimmer) and
+`contactClaims` (here) claim by contact what the hull could not reach. The named
+defect is gone — the curtain walls at (113, 900) and (−181, −125) travel with
+their wing now, resolving 22, 17 and 10 clashes on levels 402367, 694 and 400176
+— and over all ten levels the findings go 605 → 526, broken joins 485 → 389,
+curtain-wall share 68% → 57%. Clashes rise 120 → 137.
+
+The boundary moved rather than vanished: findings within 2 m of the hull edge go
+**493 → 7**, and those at 5–10 m go **16 → 357**, which is the claim's own reach.
+This model has no wing structure to use instead — one `IfcBuilding`, thirteen
+storeys, no zones and no element assemblies — so a wing has to be inferred, and
+an inferred boundary breaks joins somewhere by construction.
+
+On the voxel side the same change is decisive: reachable interior 90.1% → 95.3%,
+past the faithful build's 93.4% for the first time, and the largest stranded
+region 1,376 cells → 293.
 
 > Reviter's three.js Studio viewer is a separate thing again: it draws the
 > recovery's meshes, and this transform deliberately does not touch them, so the

@@ -53,8 +53,9 @@ import trimesh
 # and nothing else -- no geometry, no meshing. Keeping it here meant a tool
 # that only wants to LOOK at the rectification had to import trimesh and the
 # whole voxel engine to reach it. See RECTIFY.md and preview_rectify.py.
-from rectify import (WING_HULL_MARGIN_M, apply_wing, apply_wings_piecewise,
-                     compute_wing_transforms, wing_for_point, wing_records)
+from rectify import (WING_HULL_MARGIN_M, adjacency_claims, apply_wing,
+                     apply_wings_piecewise, compute_wing_transforms, wing_for_point,
+                     wing_records)
 
 # IFC element type -> coarse semantic class
 SEMANTIC_CLASSES = {
@@ -210,6 +211,15 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
             break
     drained.sort(key=lambda item: item[0])
 
+    # The hull is built from wall placements, so it misses whatever hangs on
+    # the wing's facade without being a wall -- curtain panels and mullions,
+    # measured at 68% of everything the move leaves behind. Claim those by
+    # CONTACT, once, before anything is transformed.
+    claimed = adjacency_claims([(i, v) for i, v, _ in drained], wings) if wings else {}
+    if claimed:
+        print(f"Rectify: {len(claimed)} element(s) claimed by contact with a wing "
+              f"the hull did not reach", flush=True)
+
     for shape_id, v, f in drained:
         element = model.by_id(shape_id)
         ifc_type = element.is_a()
@@ -230,6 +240,11 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
                     wing_cache[root] = wing_for_point(wings, cx, cy)
                 if wing_cache[root] is not None:
                     v = apply_wing(wing_cache[root], v)
+            elif shape_id in claimed:
+                # Joined to a wing the hull did not reach. It moves whole:
+                # cutting a mullion at a hull edge it is entirely outside of
+                # would tear the thing this pass exists to keep together.
+                v = apply_wing(claimed[shape_id], v)
             else:
                 # Everything else is assigned PER TRIANGLE, not per element.
                 # By centroid, a floor slab spanning the wing and the spine
@@ -2348,6 +2363,52 @@ def self_test() -> int:
     if len(torn) - before != walled:
         failures.append("every walled cell should be a NEW cell")
 
+    # Contact claiming: a mullion hanging on a wing's facade, outside the hull
+    # and touching a wall inside it, travels with the wing. A second mullion
+    # the same distance out but touching nothing does not, and neither does one
+    # far beyond the hull's reach.
+    hull = [{"eqs": [(-1.0, 0.0, 0.0)],          # the hull is x >= 0
+             "pivot": (0.0, 0.0), "cos": 1.0, "sin": 0.0, "shift": (0.0, 100.0)}]
+    def box(x0, y0, x1, y1):
+        return np.array([[x0, y0, 0.0], [x1, y0, 0.0], [x1, y1, 3.0], [x0, y1, 3.0]])
+    claims = adjacency_claims([
+        (1, box(0.1, 0.0, 6.0, 0.3)),      # a wall INSIDE the hull: a seed
+        (2, box(-0.4, 0.0, -0.1, 0.3)),    # touching it, just outside: claimed
+        (3, box(-0.4, 40.0, -0.1, 40.3)),  # same distance out, touching nothing
+        (4, box(-30.0, 0.0, -29.7, 0.3)),  # touching nothing, far beyond reach
+    ], hull, margin=0.0)
+    if 1 in claims:
+        failures.append("an element the hull already claims needs no contact claim")
+    if 2 not in claims:
+        failures.append("a mullion touching a claimed wall should travel with the wing")
+    if 3 in claims:
+        failures.append("an element touching nothing must not be claimed")
+    if 4 in claims:
+        failures.append("an element beyond the hull's reach must not be claimed")
+
+    # And the one that matters most: a LONG element that merely reaches the
+    # wing is not claimed. Contact is tested on boxes, so a corridor wall that
+    # touches a wing at one end touches it by its box too -- and claimed, the
+    # whole corridor swings away. On the fixture that opened 138 see-through
+    # cells in a building that had none.
+    reaching = adjacency_claims([
+        (1, box(0.1, 0.0, 6.0, 0.3)),      # the seed, inside the hull
+        (2, box(-40.0, 0.0, -0.1, 0.3)),   # a long wall touching it from outside
+    ], hull, margin=0.0)
+    if 2 in reaching:
+        failures.append("a long wall that merely reaches the wing must not be dragged into it")
+
+    # And the claim is bounded: it does not walk off across the building. A
+    # chain of touching elements leading away from the hull stops at reach_m.
+    chain = [(1, box(0.1, 0.0, 6.0, 0.3))]
+    for step in range(1, 12):
+        chain.append((10 + step, box(-step * 1.0, 0.0, -step * 1.0 + 0.9, 0.3)))
+    walked = adjacency_claims(chain, hull, reach_m=6.0, margin=0.0)
+    if not walked:
+        failures.append("a chain of touching elements should claim its near links")
+    if any(identifier > 16 for identifier in walked):
+        failures.append(f"the contact claim walked past its reach: {sorted(walked)}")
+
     # And the fast path: an element wholly inside is moved whole, unsubdivided.
     inner = np.array([[1.0, 0, 0], [2.0, 0, 0], [2.0, 1.0, 0]])
     mv, mf = apply_wings_piecewise([wing], inner, np.array([[0, 1, 2]], dtype=np.int64),
@@ -2361,7 +2422,8 @@ def self_test() -> int:
             print(f"  {line}")
         return 1
     print("self-test passed: a light well is capped, a terrace is left open, "
-          "a plate spanning a seam tears at the seam, and the tear is walled")
+          "a plate spanning a seam tears at the seam, the tear is walled, "
+          "and a mullion travels with the wall it hangs on")
     return 0
 
 

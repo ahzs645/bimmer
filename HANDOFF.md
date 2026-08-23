@@ -282,6 +282,7 @@ Every one of these was a number first, and looking changed two of them:
 | `docs/confirm_rectify_both_decoders.png` | rectification is not an artefact of one exporter | the same six wings squared, from Autodesk placements and from recovered tessellation (REVITER §2e) |
 | `docs/confirm_rectify_floor_plan.png` | the wings square up as a *building*, not as sticks | level 694 before and after, drawn by Reviter's own floor viewer (`make rectify-plan`, REVITER §2f) |
 | `docs/confirm_left_behind.png` | the hull leaves whole categories behind | walls and curtain panels that stayed put and now cross the rooms that moved (REVITER §2g) |
+| `docs/confirm_contact_claim.png` | the contact claim clears the hull edge and moves the boundary | all 605 findings placed by distance from the hull, before and after |
 
 `make confirm WORLD=out/unbc_1m` regenerates all of them from a build.
 
@@ -289,15 +290,24 @@ Every one of these was a number first, and looking changed two of them:
 
 At 1 m, after the fixes above:
 
-| | Autodesk faithful | Reviter faithful | Autodesk `--rectify` | Reviter `--rectify` |
-|---|---:|---:|---:|---:|
-| interior reachable | 36,813 / 39,409 = 93.4% | 36,794 / 39,190 = **93.9%** | 35,054 / 38,924 = 90.1% | 35,327 / 39,601 = 89.2% |
-| cut off (largest pocket) | 2,596 (362) | **2,396 (77)** | 3,870 (1,376) | 4,274 (779) |
-| holes in the envelope | 841 | 535 | **390** | 526 |
-| sees straight out | 603 (1.6%) | **533 (1.4%)** | 845 (2.4%) | 949 (2.7%) |
-| outdoor reachable / openings | 29,760 / 182 | 26,310 / 149 | 29,770 / 169 | **23,421** / 171 |
-| stairwells / turning / ISOLATED | 47 / 19 / **0** | 47 / 14 / 1 | 47 / 18 / 2 | 45 / 12 / 3 |
-| seam-wall cells | — | — | 1,147 | 935 |
+| | Autodesk faithful | Reviter faithful | Autodesk `--rectify` |
+|---|---:|---:|---:|
+| interior reachable | 36,813 / 39,409 = 93.4% | 36,794 / 39,190 = 93.9% | 37,662 / 39,528 = **95.3%** |
+| cut off (largest pocket) | 2,596 (362) | 2,396 (77) | **1,866 (293)** |
+| holes in the envelope | 841 | 535 | **508** |
+| sees straight out | 603 (1.6%) | **533 (1.4%)** | 792 (2.1%) |
+| stairwells / turning / ISOLATED | 47 / 19 / **0** | 47 / 14 / 1 | 47 / 18 / 2 |
+| seam-wall cells | — | — | 1,056 |
+| contact claims | — | — | 2,870 |
+
+**`--rectify` is now the more walkable build.** It was 90.1% reachable
+against the faithful build's 93.4% and stranded a 1,376-cell region;
+claiming by contact what the hull could not reach took it to 95.3% with a
+largest pocket of 293. That is the first time squaring the wings has paid
+for itself on the measure it was always sold on.
+
+(The reviter `--rectify` column predates the contact claim and is not
+comparable; re-run `make rectify-plan` and the conversion to refresh it.)
 
 `--rectify` finds the **same six wings in both files** — four at +32
 degrees, one at -58, one at -5 — reading per-element placements from the
@@ -335,15 +345,13 @@ verifies itself.
   defect above and is connected now; its top landing is still thin (that
   stand cell has one neighbour). Whatever remains is per-well base
   linkage at extract time; low value.
-- **The wing hull is built from `IfcWall` and misses the curtain wall.**
-  Audited floor by floor against the plan (REVITER §2g), the move leaves
-  485 broken joins and 120 clashes over ten levels, and **68% of them are
-  Curtain Wall Mullions and Curtain Panels** — the wall behind the
-  glazing rotates and the glazing stays, on every storey. This is also
-  why glass voxels fall 5% under `--rectify` and the per-triangle fix
-  recovered none of them. Fix in `scripts/rectify.py`: propagate wing
-  membership through adjacency, so anything joined to a wing travels with
-  it. Highest-value item on this list.
+- **A wing has to be inferred, so its boundary breaks joins somewhere.**
+  The model carries no wing structure to use instead — one `IfcBuilding`,
+  thirteen storeys, no zones and no element assemblies — so the wing is a
+  hull of wall angles plus a contact claim, and joins break at whichever
+  boundary is outermost. `adjacency_claims` moved that boundary from the
+  hull edge (493 findings within 2 m of it) to its own reach (357 at
+  5–10 m). Widening `reach_m` moves it again; it does not remove it.
 - **`--rectify` still leaks half again as much as the faithful build**:
   2.4% of interior cells can see straight out against 1.6%. The
   per-triangle assignment and `close_seam_walls` between them took the

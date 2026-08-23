@@ -253,6 +253,46 @@ stringers and railings have to arrive together.
 | floor holes the patcher had to fill | 1,840 | **675** | 675 |
 | columns `cap_envelope` had to roof | 1,513 | **642** | 642 |
 
+### The hull is a population, and the facade is not in it
+
+`wall_plan` builds every wing hull from `IfcWall` and `IfcWallStandardCase`
+placements. A curtain wall is neither: its panels (`IfcPlate`) and mullions
+(`IfcMember`) are their own elements hanging on the facade, so the hull never
+encloses them. The wall behind the glazing rotates 32 degrees and the glazing
+stays, driven through the rooms that moved — 409 of the 605 things the move
+leaves behind, audited floor by floor in the parser's own architectural plan.
+
+`adjacency_claims` claims by CONTACT what the hull could not reach: an element
+the hull missed travels with the wing when it touches something the wing
+claimed. Two bounds keep it from becoming a second, sloppier hull — it must
+touch, and **all** of it must sit within `reach_m` of the hull, measured at the
+box's FARTHEST corner. Contact is tested on boxes, so a forty-metre corridor
+wall that reaches a wing at one end touches it by its box too; claimed, the
+whole corridor swings away. On the fixture that opened 138 see-through cells in
+a building that had none.
+
+| | hull only | hull + contact |
+|---|---:|---:|
+| interior reachable | 35,054 / 38,924 = 90.1% | **37,662 / 39,528 = 95.3%** |
+| cut off (largest pocket) | 3,870 (1,376) | **1,866 (293)** |
+| sees straight out | 845 (2.4%) | **792 (2.1%)** |
+| of those, NOT open in the faithful build | 431 | **372** |
+| holes in the envelope | **390** | 508 |
+| elements claimed by contact | — | 2,870 |
+
+**This is what finally makes rectification pay.** Squaring the wings was always
+sold on walkability and had never delivered it: at 90.1% it was worse than the
+faithful build's 93.4%. At 95.3% it is better, and the largest stranded region
+falls from 1,376 cells to 293.
+
+What it does not do is remove the boundary. Placed by distance from the hull,
+the findings move rather than vanish — 493 within 2 m of the hull edge become
+7, and 16 at 5–10 m become 357, which is `reach_m` itself. Widening the reach
+moves the boundary again. The model carries no wing structure to use instead
+(one `IfcBuilding`, thirteen storeys, no zones, no element assemblies), so a
+wing has to be inferred, and an inferred boundary breaks joins somewhere by
+construction. `docs/confirm_contact_claim.png` is that distribution.
+
 ### And the canyon the cut leaves
 
 A clean cut does not close the gap — the gap is the point, because the wing
