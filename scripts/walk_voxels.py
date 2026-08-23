@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import sys
 from pathlib import Path
@@ -158,6 +159,54 @@ def render(grid, colours, glow, lo, eye, yaw, pitch, width=384, height=216):
 
     return Image.fromarray(
         np.clip(image.reshape(height, width, 3), 0, 255).astype(np.uint8), "RGB")
+
+
+def world_to_block(summary: dict, point) -> tuple[int, int, int]:
+    """A point in IFC world metres -> the cell it lands in, in this build.
+
+    This is the chain `summary.json` writes down, run forwards. It exists so
+    that two builds of one building can be compared at the SAME PLACE: their
+    block coordinates differ (the extents differ, so the origin shift differs)
+    and under `--rectify` the wing has moved as well, so "cell (34, 2, 1)" is
+    not the same room in both. A world metre is.
+    """
+    x, y, z = (float(v) for v in point)
+    # Rectification first: the engine applies the wing motion to the geometry
+    # BEFORE voxelizing, so a point inside a wing has to make the same move.
+    for wing in summary.get("wings", []) or []:
+        margin = wing.get("hull_margin_m", 2.5)
+        if all(e[0] * x + e[1] * y + e[2] <= margin for e in wing["hull_half_planes"]):
+            px, py = wing["pivot_xy_m"]
+            radians = math.radians(wing["rotation_deg"])
+            c, sn = math.cos(radians), math.sin(radians)
+            dx, dy = x - px, y - py
+            tx, ty = wing["shift_xy_m"]
+            x, y = px + c * dx - sn * dy + tx, py + sn * dx + c * dy + ty
+            break
+
+    transform = summary["voxel_transform"]
+    lo = transform["world_bounds_min_m"]
+    pitch = transform["pitch_m"]
+    shift = summary["origin_shift_xyz"]
+    g = [round((v - l) / pitch) for v, l in zip((x, y, z), lo)]
+    return (g[0] - shift[0], g[2] - shift[1], -g[1] - shift[2])
+
+
+def nearest_standable(world: World, cell, radius: int = 6):
+    """The closest cell a player can actually stand in. A world point names a
+    place, not a foothold -- it may land inside a wall or in the air."""
+    x, y, z = cell
+    best, best_d = None, None
+    for dx in range(-radius, radius + 1):
+        for dy in range(-2, 4):
+            for dz in range(-radius, radius + 1):
+                q = (x + dx, y + dy, z + dz)
+                if not world.standable(q):
+                    continue
+                d = dx * dx + 4 * dy * dy + dz * dz
+                if best_d is None or d < best_d:
+                    best, best_d = q, d
+    return best
 
 
 def headings(path, ahead=5, smooth=5):
@@ -313,6 +362,10 @@ def main() -> int:
     ap.add_argument("--to", default=None, help="goal cell as x,y,z (default: farthest reachable)")
     ap.add_argument("--from", dest="start", default=None,
                     help="start cell as x,y,z (default: the outermost entrance)")
+    ap.add_argument("--from-world", default=None,
+                    help="start at IFC world metres x,y,z (mapped via summary.json)")
+    ap.add_argument("--to-world", default=None,
+                    help="walk to IFC world metres x,y,z (mapped via summary.json)")
     ap.add_argument("--stride", type=int, default=2, help="cells per frame")
     ap.add_argument("--width", type=int, default=384)
     ap.add_argument("--height", type=int, default=216)
@@ -327,6 +380,25 @@ def main() -> int:
 
     goal = tuple(int(v) for v in args.to.split(",")) if args.to else None
     start = tuple(int(v) for v in args.start.split(",")) if args.start else None
+
+    if args.from_world or args.to_world:
+        summary_path = args.blocks.with_name("summary.json")
+        if not summary_path.exists():
+            raise SystemExit(f"{summary_path} is needed to map world metres into this build.")
+        summary = json.loads(summary_path.read_text())
+        probe = World.load(args.blocks)
+        if args.from_world:
+            cell = world_to_block(summary, args.from_world.split(","))
+            start = nearest_standable(probe, cell)
+            if start is None:
+                raise SystemExit(f"nothing standable near {cell} (from {args.from_world})")
+            print(f"start: world {args.from_world} m -> cell {cell} -> standing at {start}")
+        if args.to_world:
+            cell = world_to_block(summary, args.to_world.split(","))
+            goal = nearest_standable(probe, cell)
+            if goal is None:
+                raise SystemExit(f"nothing standable near {cell} (from {args.to_world})")
+            print(f"goal:  world {args.to_world} m -> cell {cell} -> standing at {goal}")
     stats = walk(args.blocks, args.out, goal, args.stride,
                  args.width, args.height, args.max_frames, start)
     print(f"walked {stats['path_cells']} cells from {stats['from']} to {stats['to']}")

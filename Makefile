@@ -14,7 +14,7 @@ WORLD ?= out/unbc_1m
 MCWEB_WORLD ?= $(WORLD)
 
 .PHONY: help setup parser-setup parser-check contract rectify-preview \
-        fixture walk p1 p05 all voxels rvt \
+        fixture fixture-recovery walk p1 p05 all voxels rvt \
         viewer mcweb blockcraft blockcraft-static blockcraft-stop clean
 
 help:
@@ -34,6 +34,7 @@ help:
 	@echo ""
 	@echo "Checking a build by walking it (no model, no client, no network):"
 	@echo "  make fixture           build a small IFC test building with an off-grid wing"
+	@echo "  make fixture-recovery  the same building shaped as an RVT recovery, both walked"
 	@echo "  make walk              first-person walkthrough of WORLD=$(WORLD)"
 	@echo ""
 	@echo "Renderer dev servers (all load WORLD=$(WORLD); override with WORLD=out/unbc_0p5m):"
@@ -79,9 +80,19 @@ rectify-preview:
 # -- that the whole pipeline runs on in seconds. The UNBC model is in neither
 # repository; this is what can be regression-tested without it.
 fixture:
-	$(PY) scripts/make_fixture_building.py --out out/fixture/building.ifc
+	$(PY) scripts/make_fixture_building.py --out out/fixture/building.ifc --shared-placement
 	$(PY) scripts/pipeline.py out/fixture/building.ifc --pitch 1.0 \
 	  --name fixture --no-web --no-preview
+
+# The same building written the way an RVT recovery writes it -- one shared
+# placement, tessellated bodies -- through the same pipeline. If these two
+# disagree, the RVT path is broken and no percentage on the Revit-exported
+# file would have said so.
+fixture-recovery: fixture
+	$(PY) scripts/ifc_to_voxels.py out/fixture/building-recovery.ifc --pitch 1.0 \
+	  --rectify --out-dir out/fixture-recovery
+	@echo "--- Revit-shaped ---"      && $(PY) scripts/audit_walkability.py out/fixture/blocks.csv | head -1
+	@echo "--- recovery-shaped ---"   && $(PY) scripts/audit_walkability.py out/fixture-recovery/blocks.csv | head -1
 
 # Walk the world and render what a player sees. A percentage cannot show a
 # corridor that pinches shut; this can.

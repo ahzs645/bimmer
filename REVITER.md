@@ -92,11 +92,26 @@ can be verified without it are:
 
 | | |
 |---|---|
+| `make fixture-recovery` | the fixture building converted twice — once Revit-shaped, once shaped the way this parser writes — and both walked |
 | `python3 scripts/rvt_to_ifc.py --self-test` | version comparison, every preflight failure path, and a stub-parser round trip through the contract gate |
 | `python3 scripts/rvt_to_ifc.py --check` | the real submodule, node version, and installed deps |
 | `python3 scripts/check_ifc_contract.py --self-test` | five synthetic producers across IFC2X3 and IFC4 |
 
-What none of them establishes is that the parser recovers this building
+Measured on the fixture building, all three shapes of the same model through
+the same pipeline:
+
+| producer | walls read | wing found | interior reachable |
+|---|---:|---|---:|
+| Revit-shaped, per-element placements | 43 (65% on-grid) | 15 walls, +32° | 656/669 = 98% |
+| Reviter's own exporter | 43 (65% on-grid) | 15 walls, +32° | 656/669 = 98% |
+| recovery-shaped fixture | 43 (65% on-grid) | 15 walls, +32° | 656/669 = 98% |
+
+Identical, including the 60-cell walk between the same two world coordinates —
+which is only checkable because `summary.json` records the transform (§1), so
+"the same place" survives the wing having moved. Before the placement fallback
+the middle row read 100% on-grid, found no wing, and rectified nothing.
+
+What none of this establishes is that the parser recovers *the UNBC building*
 correctly. That needs the model, and the answer is §3.
 
 ---

@@ -256,14 +256,90 @@ def build(path: Path, wing_degrees: float) -> None:
     print(f"wrote {path}: {len(b.products)} products, wing at {wing_degrees:g} degrees")
 
 
+def reshape_as_recovery(source: Path, out: Path) -> None:
+    """Rewrite an IFC the way an RVT recovery writes one.
+
+    Reviter gives every product the SAME `IfcLocalPlacement` and bakes world
+    coordinates into an `IfcTriangulatedFaceSet`. That is a legal IFC and a
+    completely different file to read: anything that asks a wall where it is
+    via its placement gets the same answer for every wall in the building.
+    Rectification did exactly that and silently found no wings at all.
+
+    Producing that shape here means the RVT path has a regression test that
+    needs neither an RVT nor the parser -- only the shape of what the parser
+    writes, which is the part this engine has to survive.
+    """
+    import ifcopenshell.geom
+
+    model = ifcopenshell.open(str(source))
+    settings = ifcopenshell.geom.settings()
+    settings.set("use-world-coords", True)
+    meshes = {}
+    iterator = ifcopenshell.geom.iterator(settings, model, 1)
+    if iterator.initialize():
+        while True:
+            shape = iterator.get()
+            meshes[shape.id] = (list(shape.geometry.verts), list(shape.geometry.faces))
+            if not iterator.next():
+                break
+
+    # Built from scratch, not copied. `file.add()` follows an entity's
+    # references, so adding the containment relationship drags every original
+    # placed product in with it and the output holds each wall twice -- once
+    # tessellated on the shared placement and once on its own.
+    out_builder = Builder()
+    out_file = out_builder.file
+    shared = out_file.create_entity(
+        "IfcLocalPlacement",
+        RelativePlacement=out_file.create_entity("IfcAxis2Placement3D", out_builder.origin))
+
+    for product in model.by_type("IfcProduct"):
+        verts_faces = meshes.get(product.id())
+        if verts_faces is None:
+            continue
+        verts, faces = verts_faces
+        if len(verts) < 9 or len(faces) < 3:
+            continue
+        coords = [tuple(verts[i:i + 3]) for i in range(0, len(verts), 3)]
+        triangles = [tuple(faces[i + j] + 1 for j in range(3))  # IFC is 1-based
+                     for i in range(0, len(faces), 3)]
+        face_set = out_file.create_entity(
+            "IfcTriangulatedFaceSet",
+            out_file.create_entity("IfcCartesianPointList3D", coords),
+            Closed=False, CoordIndex=triangles)
+        shape = out_file.create_entity(
+            "IfcShapeRepresentation", out_builder.body, "Body", "Tessellation", [face_set])
+        extra = {}
+        if product.is_a("IfcDoor"):
+            extra = {"OverallHeight": product.OverallHeight,
+                     "OverallWidth": product.OverallWidth,
+                     "PredefinedType": "DOOR"}
+        copy = out_file.create_entity(
+            product.is_a(), out_builder.guid(), out_builder.history, product.Name,
+            ObjectPlacement=shared,
+            Representation=out_file.create_entity(
+                "IfcProductDefinitionShape", None, None, [shape]),
+            Tag=product.Tag, **extra)
+        out_builder.products.append(copy)
+
+    out_builder.write(out)
+    print(f"wrote {out}: {len(out_builder.products)} tessellated products "
+          "on one shared placement")
+    return
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--wing-degrees", type=float, default=58.0,
                     help="0 for the on-grid control")
+    ap.add_argument("--shared-placement", action="store_true",
+                    help="also write a copy shaped the way an RVT recovery writes one")
     args = ap.parse_args()
     build(args.out, args.wing_degrees)
+    if args.shared_placement:
+        reshape_as_recovery(args.out, args.out.with_name(args.out.stem + "-recovery.ifc"))
     return 0
 
 
