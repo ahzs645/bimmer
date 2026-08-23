@@ -336,19 +336,21 @@ of it is the same world. Both files converted at 1 m, faithful (no
 | cut off | 2,596 cells | **2,396** |
 | largest cut-off pocket | 362 cells | **77 cells** |
 | interior cells open to sky | 841 | **535** |
+| interior cells that see straight out | 603 (1.6%) | **533 (1.4%)** |
 | entrance cells | 2,133 | 2,160 |
-| stairwells / turning / ISOLATED | 48 / 21 / 2 | 47 / 14 / **1** |
+| stairwells / turning / ISOLATED | 47 / 19 / **0** | 47 / 14 / 1 |
 
 The recovery is not a degraded copy. On every row where the two differ by more
 than rounding, the recovery is the cleaner world — its worst stranded pocket is
 77 cells against 362, and it leaves 306 fewer interior cells looking at the sky.
 
 **And the staircase is the same staircase.** The 16-rise switchback the
-Autodesk build puts at (195, 63) is in the recovery at (195, 52): same x span,
+Autodesk build puts at (195, 51) is in the recovery at (195, 52): same x span,
 same rise, same facing sequence east x4 / west x4 / east x4 / west x2. Routed
-under vanilla physics both give 16 stand cells whose x and y agree at every
-single step; only z differs, because the two producers write the model against
-different origins (§1). Walked side by side in `docs/confirm_reviter_same_stair.png`.
+under vanilla physics both give 16 stand cells, and **11 of the 16 are the same
+cell in all three coordinates** — every step from the first landing to the top.
+Only the first flight differs, by two blocks in z. Walked side by side in
+`docs/confirm_reviter_same_stair.png`.
 
 That is the join working end to end: a proprietary format read without
 Autodesk, written as IFC4, and walked up the same stairs.

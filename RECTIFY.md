@@ -197,29 +197,66 @@ The real model at 1 m, faithful against `--rectify`:
 
 | | faithful | `--rectify` |
 |---|---:|---:|
-| interior cells reachable | 36,813 | **39,765** |
-| interior cells standable | 39,409 | 43,972 |
-| share | **93.4%** | 90.4% |
-| cut off | 2,596 in 10 pockets | 4,207 |
-| largest cut-off pocket | 362 cells at (137, 13, 325) | **1,143 cells** at (134, 13, 36) |
-| interior cells open to sky | 841 | 1,828 |
-| outdoor cells reachable | 29,760 through 182 openings | 29,076 through 191 |
+| interior cells reachable | **36,813** | 35,444 |
+| interior cells standable | 39,409 | 39,342 |
+| share | **93.4%** | 90.1% |
+| cut off | 2,596 in 10 pockets | 3,898 |
+| largest cut-off pocket | 362 cells | **1,381 cells** |
+| interior cells open to sky | 841 | **390** |
+| interior cells that see straight out | **603 (1.6%)** | 1,145 (3.2%) |
+| outdoor cells reachable | 29,760 through 182 openings | 29,772 through 174 |
+| stairwells ISOLATED | **0** | 2 |
 
-**Rectification reaches ~2,950 more interior cells and strands a 1,143-cell
-region the faithful build does not.** Both halves of that are real and the
-share alone reports neither: 93.4% against 90.4% reads as a regression, and it
-is a denominator effect — rectification opens up 4,563 more standable cells, so
-the reachable count rises while the fraction falls.
+**Rectification buys a cleaner envelope overhead and pays for it on the
+ground.** It halves the holes in the roof (841 to 390), and it strands a
+1,381-cell region the faithful build does not, leaks twice as much sideways,
+and leaves two stairwells unreachable where the faithful build leaves none.
 
 Quote the counts, or quote both. A single percentage across two builds with
 different denominators is the same mistake as measuring wing clipping against a
 spine that moves with the wing.
 
-The 1,143-cell pocket is the actionable half, and it is new: it exists only in
-the rectified build, and until `inspect_interior.py` located it, the whole of it
-was hidden inside a three-point difference in a percentage. Walked to, it is a
-furnished interior — walls, a ceiling, a lit corridor receding at 90 degrees —
-not a rounding sliver.
+> An earlier version of this table read `44,917` reachable against `42,020` and
+> concluded rectification *reached ~2,900 more cells*. Both columns were
+> inflated by `cap_envelope` roofing over open terrace, and the rectified one
+> further by wings whose walls had left their floors behind — the bare plates
+> counted as interior. Two fixes later the sign of the comparison changed. A
+> number measured through a broken classifier is not a small error.
+
+The stranded pocket is the actionable half, and it exists only in the rectified
+build: until `inspect_interior.py` located it, the whole of it was hidden inside
+a three-point difference in a percentage. Walked to, it is a furnished interior
+— walls, a ceiling, a lit corridor receding at 90 degrees — not a rounding
+sliver.
+
+### The wing membership rule, and what it cost
+
+`wing_for_point` decided an element's wing from its CENTROID. Right for a wall,
+wrong for a floor slab, which spans the wing and the spine so its centroid falls
+outside the hull. Measured per hull on the real model: **90-99% of the walls
+touching each hull rotated, against 25-78% of the plates.** The wing's walls
+swung 32 or 58 degrees away and the floor they stood on stayed exactly where it
+was. Wall voxels fell 3.4% and glass 5% while floor voxels barely moved.
+
+`apply_wings_piecewise` assigns per triangle instead: a mesh whose vertices
+disagree is subdivided below half a metre, and each triangle goes wholly with
+the wing its own centroid falls in, so the plate tears at the hull and its wing
+half travels with the wing. Aggregates still move whole — a stair's flights,
+stringers and railings have to arrive together.
+
+| | centroid | per triangle |
+|---|---:|---:|
+| interior cells that see straight out | 4,240 (10.7%) | **1,145 (3.2%)** |
+| largest such cluster | 718 cells | **159** |
+| holes in the envelope | 1,828 | **390** |
+| floor holes the patcher had to fill | 1,840 | **675** |
+| columns `cap_envelope` had to roof | 1,513 | **642** |
+
+Two hypotheses were measured and refuted before this one, which is why they are
+written down: elements STRADDLING a hull are not the problem (the worst wing has
+the fewest, 34), and the hulls do not overlap (0 m² between any pair). Filling
+every diagonal elbow in the world — the classic 8-connected voxel wall leak —
+moves the number by 13 cells out of 4,151.
 
 Both columns are smaller than they were before `cap_envelope` learned the
 escape test (see HANDOFF, "Roof or hole"). The old rule capped 5,330 columns in

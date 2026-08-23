@@ -53,7 +53,8 @@ import trimesh
 # and nothing else -- no geometry, no meshing. Keeping it here meant a tool
 # that only wants to LOOK at the rectification had to import trimesh and the
 # whole voxel engine to reach it. See RECTIFY.md and preview_rectify.py.
-from rectify import apply_wing, compute_wing_transforms, wing_for_point, wing_records
+from rectify import (apply_wing, apply_wings_piecewise, compute_wing_transforms,
+                     wing_for_point, wing_records)
 
 # IFC element type -> coarse semantic class
 SEMANTIC_CLASSES = {
@@ -215,17 +216,28 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
 
         if wings and len(v):
             # rectification: rotate every element of an off-grid wing into
-            # the wing's own (orthogonal) frame. Assignment is cached per
-            # AGGREGATE root so a stair and all its flights/stringers/
-            # railings rotate together even if a member's own centroid
-            # falls just outside the wing hull.
+            # the wing's own (orthogonal) frame.
             dec = getattr(element, "Decomposes", None)
-            root = dec[0].RelatingObject.id() if dec else shape_id
-            if root not in wing_cache:
-                cx, cy = v[:, 0].mean(), v[:, 1].mean()
-                wing_cache[root] = wing_for_point(wings, cx, cy)
-            if wing_cache[root] is not None:
-                v = apply_wing(wing_cache[root], v)
+            if dec:
+                # An AGGREGATE moves whole: a stair's flights, stringers and
+                # railings have to arrive together, and half a stair placed
+                # correctly is worse than a whole one placed loosely. Cached on
+                # the root so a member whose own centroid falls just outside
+                # the hull still follows its parent.
+                root = dec[0].RelatingObject.id()
+                if root not in wing_cache:
+                    cx, cy = v[:, 0].mean(), v[:, 1].mean()
+                    wing_cache[root] = wing_for_point(wings, cx, cy)
+                if wing_cache[root] is not None:
+                    v = apply_wing(wing_cache[root], v)
+            else:
+                # Everything else is assigned PER TRIANGLE, not per element.
+                # By centroid, a floor slab spanning the wing and the spine
+                # stays behind while every wall standing on it turns 32 or 58
+                # degrees away -- measured at 90-99% of walls rotating against
+                # 25-78% of plates, and it is why a rectified build had
+                # storeys of bare plate with nothing in the column at all.
+                v, f = apply_wings_piecewise(wings, v, f)
 
         if ifc_type in EXCLUDE_TYPES:
             excluded_counts[ifc_type] += 1
@@ -2122,12 +2134,47 @@ def self_test() -> int:
     if capped != 9:
         failures.append(f"the 3x3 hole in the roof should be capped with 9 cells, got {capped}")
 
+    # A wing rotation applied to a plate that spans the seam. Assigned by the
+    # element's centroid the whole plate stays put (its centroid is outside the
+    # hull) while the walls standing on it turn -- the bare-plate defect.
+    wing = {"eqs": [(-1.0, 0.0, 0.0)],          # the hull is x >= 0
+            "pivot": (0.0, 0.0), "cos": 1.0, "sin": 0.0, "shift": (0.0, 100.0)}
+    slab = np.array([[-16.0, 0, 0], [4.0, 0, 0], [4.0, 4.0, 0], [-16.0, 4.0, 0]])
+    faces = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int64)
+    centre = slab[:, :2].mean(axis=0)
+    if wing_for_point([wing], centre[0], centre[1], margin=0.0) is not None:
+        failures.append("the fixture's plate is not claimed by its centroid; "
+                        "the test needs a plate that straddles")
+    moved, mfaces = apply_wings_piecewise([wing], slab, faces, max_edge=1.0, margin=0.0)
+    if len(mfaces) <= len(faces):
+        failures.append("a straddling plate should be subdivided, not moved whole")
+    # The wing moves 100 m north, so its half of the plate leaves the y=0..4
+    # band; the spine's half must be exactly where it was, west edge included,
+    # and must not reach east of the hull edge.
+    if not (moved[:, 1] > 99.0).any():
+        failures.append("the plate's hull half should have travelled with the wing")
+    band = moved[(moved[:, 1] >= -0.001) & (moved[:, 1] <= 4.001)]
+    if not len(band) or abs(band[:, 0].min() + 16.0) > 0.001:
+        failures.append("the plate's spine half should have stayed where it was, "
+                        f"west edge at x=-16; got {band[:, 0].min() if len(band) else None}")
+    if len(band) and band[:, 0].max() > 1.001:
+        failures.append(f"the spine half should stop at the hull edge, "
+                        f"got x up to {band[:, 0].max():.2f}")
+
+    # And the fast path: an element wholly inside is moved whole, unsubdivided.
+    inner = np.array([[1.0, 0, 0], [2.0, 0, 0], [2.0, 1.0, 0]])
+    mv, mf = apply_wings_piecewise([wing], inner, np.array([[0, 1, 2]], dtype=np.int64),
+                                   margin=0.0)
+    if len(mf) != 1 or np.allclose(mv, inner):
+        failures.append("an element wholly inside a wing should move whole, unsubdivided")
+
     if failures:
         print("self-test FAILED")
         for line in failures:
             print(f"  {line}")
         return 1
-    print("self-test passed: a light well is capped and a terrace is left open")
+    print("self-test passed: a light well is capped, a terrace is left open, "
+          "and a plate spanning a seam tears at the seam")
     return 0
 
 

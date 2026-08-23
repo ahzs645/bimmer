@@ -109,9 +109,10 @@ scripts/inspect_interior.py out/unbc/blocks.csv --out out/inspect \
 Locates the cut-off pockets rather than counting them, separates the
 roof from the interior (standing on the roof is standable and is not a
 storey at 0% reachable), reports interior cells with open sky above
-them, locates every place the player crosses from indoors to outdoors,
-and per stairwell gives its position, its facing level by level, and how
-many turns that adds up to.
+them, counts the interior cells that can see straight out sideways,
+locates every place the player crosses from indoors to outdoors, and per
+stairwell gives its position, its facing level by level, and how many
+turns that adds up to.
 
 **Say where, not how many.** Every number in that report was wrong once,
 and in each case the count looked reasonable while the location gave it
@@ -132,11 +133,60 @@ away:
   those "holes" showed the campus and the horizon. See below.
 - *"~2-3 stairwells per build are flagged ISOLATED, their floors served
   by seam corridors"* was a guess, and wrong for the one that was looked
-  at. The 12-rise flight at (179, 228) is an exterior stair with no
-  landing plate at either end: every tread is standable, and the only
-  neighbour of the bottom tread is the tread above it. Walk to the bottom
-  and look east and there is nothing but sky
-  (`docs/confirm_isolated_stair.png`).
+  at. The 12-rise flight at (179, 228) had no landing plate at either
+  end: every tread standable, the bottom tread's only neighbour the tread
+  above it, and nothing but sky when you looked east off it. Its landings
+  had been left behind by `--rectify` (see below); they are back, and it
+  is connected (`docs/confirm_isolated_stair.png`).
+- ***"I see a lot of gaps where I'm not supposed to see any."*** Nothing
+  in the report said so. Instrumenting the raycaster (`render(...,
+  diagnose=True)` returns why each pixel is empty) said 10.7% of interior
+  stand cells in the rectified build had a clear horizontal line out of
+  the model, against 1.6% in the faithful one. That is now the
+  `see_through` check, and finding its cause is the next section.
+
+## Why a rectified build leaked: walls turned, floors did not
+
+`--rectify` rotates an off-grid wing onto the world grid. `wing_for_point`
+decided which wing an element belonged to **from the element's centroid**.
+That is right for a wall — small, wholly one side of the seam — and wrong
+for a floor slab, which spans the wing AND the spine, so its centroid sits
+outside the hull. Measured per hull on the real model:
+
+| | walls that rotate | plates that rotate |
+| --- | ---: | ---: |
+| wing 0 (+32) | 91% | 25% |
+| wing 2 (+32) | 90% | 50% |
+| wing 4 (+32) | 98% | 59% |
+| wing 5 (-5) | 97% | 25% |
+
+So a wing's walls swung 32 or 58 degrees away and the floor they stood on
+stayed exactly where it was: storeys of bare plate with no wall anywhere
+in the column, and the wing's walls landing in the middle of somewhere
+else. Wall voxels fell 3.4% and glass 5% while floor voxels did not move.
+
+A rigid motion applied to a REGION has to cut whatever crosses the
+region's boundary. `apply_wings_piecewise` does that on the triangles: a
+mesh whose vertices disagree about their wing is subdivided below half a
+metre and each triangle then goes wholly with the wing its own centroid
+falls in. Aggregates (a stair and its flights, stringers and railings)
+still move whole — half a stair placed correctly is worse than a whole
+one placed loosely.
+
+| | before | after |
+| --- | ---: | ---: |
+| interior cells that can see straight out | 4,240 (10.7%) | **1,145 (3.2%)** |
+| largest such cluster | 718 cells | **159** |
+| holes in the envelope | 1,828 | **390** |
+| floor holes the patcher had to fill | 1,840 | **675** |
+| columns `cap_envelope` had to roof | 1,513 | **642** |
+| stairwells ISOLATED | 2 | 2 (one of them a different, smaller well) |
+
+Two things got slightly worse and are not hidden: reachable interior
+share 90.4% to 90.1%, and the largest stranded pocket 1,143 cells to
+1,381. The faithful build is still the cleaner world on see-through
+(1.6%), so rectification has not stopped costing anything — it has
+stopped costing the envelope.
 
 ## Roof or hole: decide it by escape
 
@@ -161,18 +211,32 @@ faithful build and **6,660** in the rectified one; the escape test caps
 **887** and **1,513**. The rest was roof invented over open terrace,
 with ceiling lanterns recessed into the underside of it.
 
-## The three claims, confirmed by looking
+## The claims, confirmed by looking
 
-Every one of these was a number first and turned out to need a frame:
+Every one of these was a number first, and looking changed two of them:
 
 | figure | claim | what the frame shows |
 | --- | --- | --- |
-| `docs/confirm_stairs_bend.png` | stairwells turn as they rise | a 16-step switchback at (195, 63) walked end to end: x reverses at y=5 and y=10, y never drops |
-| `docs/confirm_envelope.png` | roof, hole, and the step between | sky in a box (a hole), a light well, and the two crossings the player walks out through |
-| `docs/confirm_isolated_stair.png` | one flight is unreachable | its bottom tread, looking east at open sky where the landing should be |
-| `docs/confirm_reviter_same_stair.png` | the clean-room decoder recovers the same building | that switchback walked in both worlds, x and y agreeing at every step (REVITER §2d) |
+| `docs/confirm_stairs_bend.png` | stairwells turn as they rise | a 16-step switchback at (195, 51) walked end to end: x reverses at y=5 and y=10, y never drops |
+| `docs/confirm_envelope.png` | roof, hole, and the step between | sky in a box (a hole), a light well, and the crossings the player walks out through |
+| `docs/confirm_see_through.png` | you could stand indoors and see the horizon | three columns of bare floor plate, and the same build after the fix above |
+| `docs/confirm_isolated_stair.png` | one flight was unreachable, and why | its bottom tread looking east at open sky, then the same flight with its landing back |
+| `docs/confirm_reviter_same_stair.png` | the clean-room decoder recovers the same building | that switchback walked in both worlds; 11 of 16 stand cells are the same cell (REVITER §2d) |
 
 `make confirm WORLD=out/unbc_1m` regenerates all of them from a build.
+
+## The three builds, side by side
+
+At 1 m, after the fixes above:
+
+| | Autodesk faithful | Reviter faithful | Autodesk `--rectify` |
+|---|---:|---:|---:|
+| interior reachable | 36,813 / 39,409 = 93.4% | 36,794 / 39,190 = **93.9%** | 35,444 / 39,342 = 90.1% |
+| cut off (largest pocket) | 2,596 (362) | **2,396 (77)** | 3,898 (1,381) |
+| holes in the envelope | 841 | 535 | **390** |
+| sees straight out | 603 (1.6%) | **533 (1.4%)** | 1,145 (3.2%) |
+| outdoor reachable / openings | 29,760 / 182 | **26,310 / 149** | 29,772 / 174 |
+| stairwells / turning / ISOLATED | 47 / 19 / **0** | 47 / 14 / 1 | 47 / 18 / 2 |
 
 ## After ANY engine change, run this
 
@@ -197,13 +261,18 @@ verifies itself.
   by wall rounding, ~100 free-standing in glazed facades, a handful of
   exterior doors still facing drops where no apron fit. A curated
   overrides JSON for the UNBC model would zero the visible ones.
-- **2 stairwells per build flagged ISOLATED** by the well metric. One
-  was walked: a 12-rise exterior flight at (179, 228) hanging in the air,
-  with no landing plate at either end, so its bottom tread's only
-  neighbour is the tread above it. Not a metric artifact and not served
-  by anything else — those treads are simply unreachable. Fix is a
-  landing plate where an exterior stair meets a storey, at extract time;
-  medium value, one stairwell per build.
+- **Stairwells flagged ISOLATED**: 0 in the faithful build, 1 with the
+  recovered IFC, 2 with `--rectify`. The one that was walked — a 12-rise
+  flight with no landing at either end — turned out to be the wing/plate
+  defect above and is connected now; its top landing is still thin (that
+  stand cell has one neighbour). Whatever remains is per-well base
+  linkage at extract time; low value.
+- **`--rectify` still leaks twice as much as the faithful build**: 3.2%
+  of interior cells can see straight out against 1.6%. The per-triangle
+  assignment fixed the wing seams; what is left is the plate edge itself,
+  where a wing half and a spine half of the same slab now end a metre
+  apart. The seam stitcher bridges the walkable gap but does not close
+  the envelope.
 - **Rectified build**: 27 wing walls still clip the spine (the source
   model interlocks there — no rigid motion can separate them), and 1
   stepped door pair near a seam.

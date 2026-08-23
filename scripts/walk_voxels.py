@@ -82,7 +82,8 @@ def occupancy(world: World):
     return grid, colours, lo, glow
 
 
-def render(grid, colours, glow, lo, eye, yaw, pitch, width=384, height=216):
+def render(grid, colours, glow, lo, eye, yaw, pitch, width=384, height=216,
+           diagnose=False):
     """One first-person frame, by marching every pixel's ray through the grid.
 
     A per-pixel DDA in pure Python would be minutes a frame; every ray is
@@ -114,6 +115,7 @@ def render(grid, colours, glow, lo, eye, yaw, pitch, width=384, height=216):
     voxel = np.floor(origin).astype(np.int64)[None, :].repeat(len(dirs), axis=0)
     side = (np.where(step > 0, voxel + 1 - origin, origin - voxel)) * delta
 
+    left_grid = np.zeros(len(dirs), dtype=bool)
     hit_slot = np.zeros(len(dirs), dtype=np.uint16)
     hit_axis = np.zeros(len(dirs), dtype=np.int64)
     hit_dist = np.full(len(dirs), np.inf)
@@ -131,6 +133,8 @@ def render(grid, colours, glow, lo, eye, yaw, pitch, width=384, height=216):
         inside = live & np.all((voxel >= 0) & (voxel < grid.shape), axis=1)
         # A ray that leaves the grid is sky and stops; one that stays looks up
         # what it entered.
+        left_now = live & ~inside
+        left_grid |= left_now
         live &= inside | ~live
         live[~inside] = False
         if inside.any():
@@ -157,8 +161,20 @@ def render(grid, colours, glow, lo, eye, yaw, pitch, width=384, height=216):
         fog = np.clip((hit_dist[struck] - FOG_START) / (FOG_END - FOG_START), 0, 1)[:, None]
         image[struck] = colour * (1 - fog) + FOG_COLOUR * fog
 
-    return Image.fromarray(
+    frame = Image.fromarray(
         np.clip(image.reshape(height, width, 3), 0, 255).astype(np.uint8), "RGB")
+    if not diagnose:
+        return frame
+    # Why is a pixel not a block? Three different answers, and only one of them
+    # is "there is nothing there". A ray that leaves the grid saw out of the
+    # model; a ray still alive after MAX_STEPS ran out of march and was painted
+    # sky anyway, which puts a false hole at the end of any long sightline.
+    return frame, {
+        "hit": struck.reshape(height, width),
+        "left_grid": (left_grid & ~struck).reshape(height, width),
+        "out_of_steps": (live & ~struck).reshape(height, width),
+        "distance": np.where(struck, hit_dist, np.nan).reshape(height, width),
+    }
 
 
 def world_to_block(summary: dict, point) -> tuple[int, int, int]:

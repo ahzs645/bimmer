@@ -329,6 +329,92 @@ def wing_for_point(wings, x, y, margin=WING_HULL_MARGIN_M):
     return None
 
 
+def wing_index_for_verts(wings, v, margin=WING_HULL_MARGIN_M):
+    """Which wing each vertex falls in, as an int array (-1 = none).
+
+    Called once per element on the whole vertex array, so it rejects a wing on
+    the element's bounding box first: a half-plane whose nearest bbox corner is
+    already outside cannot admit any vertex, and most elements are nowhere near
+    most wings.
+    """
+    out = np.full(len(v), -1, dtype=np.int64)
+    if not len(v):
+        return out
+    lo = v[:, :2].min(axis=0)
+    hi = v[:, :2].max(axis=0)
+    for i, w in enumerate(wings):
+        for e in w["eqs"]:
+            nearest = (e[0] * (lo[0] if e[0] > 0 else hi[0])
+                       + e[1] * (lo[1] if e[1] > 0 else hi[1]) + e[2])
+            if nearest > margin:
+                break                      # whole bbox outside this half-plane
+        else:
+            inside = out < 0
+            for e in w["eqs"]:
+                inside &= (e[0] * v[:, 0] + e[1] * v[:, 1] + e[2] <= margin)
+            out[inside] = i
+    return out
+
+
+def apply_wings_piecewise(wings, v, f, max_edge=0.5, margin=WING_HULL_MARGIN_M):
+    """Rotate the parts of one mesh that lie in a wing, and only those.
+
+    `wing_for_point` decides an element's wing from its CENTROID. That is right
+    for a wall -- small, and wholly on one side of the seam -- and wrong for a
+    floor slab, which spans the wing and the spine, so its centroid sits
+    outside the hull. Measured on the real building: 90-99% of the walls
+    touching each hull rotate, against 25-78% of the plates. The wing's walls
+    swing 32 or 58 degrees away and the floor they stood on stays exactly where
+    it was, which is why a rectified build has storeys of bare plate with no
+    envelope in the column at all.
+
+    A rigid motion applied to a REGION has to cut whatever crosses the region's
+    boundary. This does that on the triangles: a mesh whose vertices disagree
+    is subdivided until its triangles are smaller than `max_edge`, and each
+    triangle then goes wholly with the wing its own centroid falls in. The
+    plate tears at the hull, its wing half travels with the wing, and the seam
+    that opens is the seam the stitcher already exists to bridge.
+
+    Returns (verts, faces); triangles are emitted independently, because two
+    neighbouring triangles that go to different wings cannot share a vertex.
+    """
+    where = wing_index_for_verts(wings, v, margin)
+    tri = v[f]                                     # (n, 3, 3)
+    same = (where[f] == where[f][:, :1]).all(axis=1)
+    if same.all():
+        # Fast path: one assignment for the whole mesh, no subdivision, no
+        # vertex duplication. This is every wall and almost every element.
+        index = int(where[f[0, 0]]) if len(f) else -1
+        return (apply_wing(wings[index], v) if index >= 0 else v), f
+
+    # Only the straddling triangles are subdivided; the rest pass through.
+    keep = tri[same]
+    work = tri[~same]
+    for _ in range(6):
+        edge = np.linalg.norm(work - work[:, [1, 2, 0]], axis=2).max(axis=1)
+        big = edge > max_edge
+        if not big.any():
+            break
+        a, b, c = work[big, 0], work[big, 1], work[big, 2]
+        ab, bc, ca = (a + b) / 2, (b + c) / 2, (c + a) / 2
+        work = np.concatenate([
+            work[~big],
+            np.stack([a, ab, ca], axis=1), np.stack([ab, b, bc], axis=1),
+            np.stack([ca, bc, c], axis=1), np.stack([ab, bc, ca], axis=1),
+        ])
+    tri = np.concatenate([keep, work]) if len(keep) else work
+
+    centre = tri.mean(axis=1)
+    index = wing_index_for_verts(wings, centre, margin)
+    moved = tri.reshape(-1, 3).copy()
+    flat = np.repeat(index, 3)
+    for i in np.unique(flat):
+        if i < 0:
+            continue
+        moved[flat == i] = apply_wing(wings[i], moved[flat == i])
+    return moved, np.arange(len(moved), dtype=np.int64).reshape(-1, 3)
+
+
 def apply_wing(w, v):
     """Rigidly rotate (and push-apart shift) verts about the wing pivot."""
     px, py = w["pivot"]

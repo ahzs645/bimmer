@@ -140,6 +140,66 @@ def outdoors_by_escape(world: World, exposed) -> set:
     return outside
 
 
+def see_through(world: World, interior) -> list[dict]:
+    """Interior stand cells with a clear horizontal line out of the model.
+
+    Standing indoors and seeing the sky sideways is the one defect a
+    reachability percentage can never report: the cell is reachable, it is
+    under a roof, it counts as interior, and the wall in front of it is simply
+    not there. It is also the first thing a person notices, which is how this
+    check came to exist -- the frames looked wrong before any number did.
+
+    Axis rays rather than a full sweep: a voxel wall is axis-aligned, so a run
+    that clears one of the four cardinal directions is a hole in a wall, and
+    the whole level is answered by four cumulative sums instead of a ray per
+    cell. Returns clusters, largest first, so the answer is a place to stand.
+    """
+    interior = list(interior)
+    if not interior or not world.solid:
+        return []
+    cells = np.array(list(world.solid.keys()), dtype=np.int64)
+    lo = cells.min(axis=0)
+    hi = cells.max(axis=0)
+    dense = np.zeros(tuple(hi - lo + 1), dtype=bool)
+    dense[cells[:, 0] - lo[0], cells[:, 1] - lo[1], cells[:, 2] - lo[2]] = True
+
+    by_level = {}
+    for cell in interior:
+        by_level.setdefault(cell[1], []).append(cell)
+
+    open_cells = []
+    for level, here in by_level.items():
+        y = level - lo[1]
+        if not 0 <= y < dense.shape[1]:
+            continue
+        plane = dense[:, y, :]
+        clear = ((np.cumsum(plane[::-1, :], axis=0)[::-1, :] == 0)
+                 | (np.cumsum(plane, axis=0) == 0)
+                 | (np.cumsum(plane[:, ::-1], axis=1)[:, ::-1] == 0)
+                 | (np.cumsum(plane, axis=1) == 0))
+        open_cells += [c for c in here if clear[c[0] - lo[0], c[2] - lo[2]]]
+
+    seen, groups = set(), []
+    pool = set(open_cells)
+    for cell in sorted(pool):
+        if cell in seen:
+            continue
+        group, queue = [], deque([cell])
+        seen.add(cell)
+        while queue:
+            x, y, z = queue.popleft()
+            group.append((x, y, z))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        n = (x + dx, y + dy, z + dz)
+                        if n in pool and n not in seen:
+                            seen.add(n)
+                            queue.append(n)
+        groups.append({"cells": len(group), "at": list(sorted(group)[len(group) // 2])})
+    return sorted(groups, key=lambda g: g["cells"], reverse=True)
+
+
 def tread_facings(world: World) -> dict:
     """Every shaped stair block, mapped to the direction it climbs."""
     out = {}
@@ -398,6 +458,8 @@ def inspect(blocks: Path, out_dir: Path, views: int = 8,
     cut_off = pockets(world, interior, reached)
     stairs = stair_report(world, reached)
     crossings = leaks(world, interior & reached, outdoors & reached)
+    through = see_through(world, sorted(interior & reached))
+    through_cells = sum(g["cells"] for g in through)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     # Views spread over the interior rather than along one route, so every
@@ -452,6 +514,16 @@ def inspect(blocks: Path, out_dir: Path, views: int = 8,
                    width, height).save(
                 out_dir / f"hole_{index:02d}_{cell[0]}_{cell[1]}_{cell[2]}.png")
 
+        # And the wall that is not there: standing on an interior cell that has
+        # a clear line out, looking along it. This is the one a person spots
+        # before any metric does.
+        for index, group in enumerate(through[:outside_views]):
+            cell = tuple(group["at"])
+            eye = (cell[0] + 0.5, cell[1] + 1.62, cell[2] + 0.5)
+            render(grid, colours, glow, lo, eye, best_view(world, cell), 0.0,
+                   width, height).save(
+                out_dir / f"seethrough_{index:02d}_{cell[0]}_{cell[1]}_{cell[2]}.png")
+
         # And the doorway itself: standing indoors, looking at the gap. A view
         # from the roof shows that the player got out; only this shows how.
         for index, leak in enumerate(crossings[:outside_views]):
@@ -476,6 +548,9 @@ def inspect(blocks: Path, out_dir: Path, views: int = 8,
         "outside_reachable_sample": [list(p) for p in outside_reachable[:10]],
         "crossings": len(crossings),
         "crossings_top": crossings[:10],
+        "see_through": through_cells,
+        "see_through_share": through_cells / max(1, len(interior & reached)),
+        "see_through_top": through[:10],
         "stairwells": stairs,
         "climbed": climbed,
         "looked_out": looked_out,
@@ -569,6 +644,28 @@ def self_test() -> int:
                             f"{report['outside_reachable']} outdoor cells reachable")
         if len(list((tmp / "out").glob("view_*.png"))) != 3:
             failures.append("a view per region should be written")
+        # The fixture's walls are complete, so nothing indoors may see out
+        # sideways. This is the baseline the next fixture breaks on purpose.
+        if report["see_through"]:
+            failures.append(f"a walled fixture should see out of nothing, "
+                            f"got {report['see_through']} cells: {report['see_through_top'][:2]}")
+
+        # The same box with one wall block knocked out at eye level: exactly
+        # the cells whose row or column runs through the gap should see out.
+        holed = tmp / "holed.csv"
+        with holed.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["x", "y", "z", "block"])
+            writer.writerows(r for r in rows if (r[0], r[1], r[2]) != (5, 1, 0))
+        report = inspect(holed, tmp / "holed", views=1, width=64, height=36,
+                         outside_views=1)
+        if not report["see_through"]:
+            failures.append("a wall with a block missing should be seen through")
+        elif report["see_through_top"][0]["at"][0] != 5:
+            failures.append(f"the see-through should be the column through the gap, "
+                            f"got {report['see_through_top'][0]}")
+        if not list((tmp / "holed").glob("seethrough_*.png")):
+            failures.append("the missing wall should be shown from indoors")
 
         # A dog-leg: three treads east, then three north. Two facings in one
         # well is not enough to call that a bend -- the earlier version said
@@ -692,6 +789,12 @@ def main() -> int:
     for leak in r["crossings_top"][:5]:
         print(f"  {tuple(leak['inside'])} -> {tuple(leak['outside'])} "
               f"({leak['crossings']} crossings over {leak['cells']} stand cells)")
+
+    print(f"\nseeing straight out: {r['see_through']:,} interior cells "
+          f"({r['see_through_share']:.1%}) have a clear horizontal line out of the model, "
+          f"in {len(r['see_through_top'])}+ clusters")
+    for group in r["see_through_top"][:5]:
+        print(f"  {group['cells']:>5} cells, e.g. at {tuple(group['at'])}")
 
     print(f"\nstairwells: {len(r['stairwells'])}")
     for well in r["stairwells"]:
