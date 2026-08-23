@@ -229,6 +229,32 @@ It reads attributes and relationships only — no meshing — so it finishes on 
 
 ---
 
+## 2a. The gate, run on the real building
+
+`check_ifc_contract.py` against the UNBC IFC (`adb85a6f…`), 22 seconds:
+
+| check | result |
+|---|---|
+| schema | IFC2X3, 41,312 products |
+| units | **millimetres** (0.001 m per file unit) — flagged, and correct: IfcOpenShell normalises, `--pitch` stays metres |
+| up axis | Z-up |
+| class coverage | 38,226 products, **0** in the catch-all `other` |
+| doors | 1,912, **all** with `OverallWidth`; **35** within 0.1 cell of a leaf-count boundary |
+| stairs | 104 containers, 123 flights, **all 123 aggregated**; 1 spiral |
+| floors | 161 slabs + 46 coverings + 20 roofs across 13 storeys |
+| openings | 1,820/1,932 resolve to a host (94.2%) |
+| join key | 38,222 of 38,226 carry a Tag |
+
+Three things this settles that had only been asserted:
+
+- the file is in **millimetres**, not metres — the units check earns its place;
+- **35 doors** sit close enough to a `round(width / pitch)` boundary that a
+  small change in `OverallWidth` flips them between one leaf and two. That is
+  the population §4's item 3 is about, and it is now a number;
+- there **is** a `SPIRAL_STAIR` here, so the spiral synthesis is live code on
+  this model — and it is exactly what a Reviter export cannot trigger, because
+  its `PredefinedType` is `.NOTDEFINED.` (§3).
+
 ## 3. Where a Reviter export stands today
 
 From Reviter's independent-reader run of 2026-08-19 (38,978 products, read back

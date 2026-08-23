@@ -159,6 +159,38 @@ first principal axis as the angle. Footprints come straight off
 attribute access rather than a mesh. A file that offers neither now says so
 instead of returning a perfectly grid-aligned building.
 
+### Measured on the real model
+
+The UNBC IFC (`adb85a6f…`, the file every dated audit here was written
+against) through `preview_rectify.py`, in 34 seconds:
+
+```
+14,902 walls, read from per-element placements; 9,684 axis-aligned (65%)
+6 wings: four at +32 deg, one at -58, one at -5      5,066 walls (34%) move
+```
+
+That is this repository's own headline reproduced by a tool that did not exist
+when it was written — 65% axis-aligned, six wings, five from the 58 degree
+family and one 5 degree skew — which is the first independent confirmation
+either number has had.
+
+The costs, which had never been measured per wall:
+
+| | walls |
+|---|---:|
+| already on the grid, rotated OFF it by a wing's hull | **523** |
+| within 2 m of the spine or another wing afterwards | 104 |
+| touching the spine before, clear of it after (the stitcher's work) | 89 |
+
+**On the reconciliation with the 27 below.** That figure and this 104 are not
+the same measurement and should not be read against each other. RECTIFY.md
+measures wall centres within **1 m**; `clipping()` uses 2 m. At 1 m, and
+excluding on-grid walls that sit inside a wing's hull and therefore travel with
+it, the same run gives **82 rotation-only → 36 after the push-apart**, against
+the 104 → 27 recorded below. Same direction, same rough halving, different
+denominators; the residual gap is the hull-membership correction and has not
+been chased further.
+
 ### What it costs, per wall
 
 The report used to be entirely the case *for* rectification. Three costs are
