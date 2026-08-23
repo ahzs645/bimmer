@@ -162,27 +162,40 @@ def inspect(blocks: Path, out_dir: Path, views: int = 8,
     # what the player can reach hides exactly the rooms most likely to be wrong.
     exposed = set(open_to_sky(world, sorted(standable_cells)))
 
-    # Standing on the roof is standable and is not interior. Counting it as
-    # interior reports the roof as a storey that is 0% reachable, which is both
-    # alarming and correct-by-accident: you are not meant to get up there.
-    # A level is outdoors when nearly all of it has open sky above.
-    levels = storeys(list(standable_cells))
-    outdoor_levels = set()
-    for level in levels:
-        on_level = {p for p in standable_cells if p[1] == level}
-        if on_level and len(on_level & exposed) / len(on_level) > 0.8:
-            outdoor_levels.add(level)
+    # Roof or hole? Both are "standable with open sky above", and the first
+    # version of this decided by LEVEL: a level was outdoors when most of it
+    # was exposed. That works on a building with one flat roof and fails on a
+    # real one -- UNBC has stepped roofs at many levels, so roof terraces at
+    # intermediate levels counted as holes and the number came out at 53% of
+    # the interior, which is not a finding, it is a broken test.
+    #
+    # Decided per COLUMN instead, by the same rule `cap_envelope` uses: an
+    # exposed cell whose neighbours are covered ABOVE it is a gap in something;
+    # one whose neighbours are not is the top of the building.
+    covered_at = {}
+    for (x, y, z) in world.solid:
+        column = (x, z)
+        if y > covered_at.get(column, -1):
+            covered_at[column] = y
 
-    outdoors = {p for p in standable_cells if p[1] in outdoor_levels or p in exposed}
+    def is_hole(cell, min_neighbours=3, clearance=2):
+        x, y, z = cell
+        higher = sum(1 for dx in (-1, 0, 1) for dz in (-1, 0, 1)
+                     if (dx or dz) and covered_at.get((x + dx, z + dz), -1) >= y + clearance)
+        return higher >= min_neighbours
+
+    envelope_holes = sorted(p for p in exposed if is_hole(p))
+    roof_cells = exposed - set(envelope_holes)
+    outdoor_levels = sorted({p[1] for p in roof_cells})
+
+    outdoors = roof_cells
     interior = standable_cells - outdoors
-    # An open column over an INTERIOR level is a hole in the envelope, not a
-    # roof to stand on -- the two look identical until the levels are split.
-    envelope_holes = sorted(p for p in exposed if p[1] not in outdoor_levels)
     # And the reverse question: can the player get out where they should not?
     outside_reachable = sorted(outdoors & reached)
 
     per_storey = {}
-    for level in sorted(set(levels) - outdoor_levels):
+    levels = storeys(list(interior))
+    for level in levels:
         on_level = {p for p in interior if p[1] == level}
         got = on_level & reached
         per_storey[level] = {"standable": len(on_level), "reachable": len(got),
@@ -207,7 +220,7 @@ def inspect(blocks: Path, out_dir: Path, views: int = 8,
         "entrances": len(seeds),
         "reachable_interior": len(interior & reached),
         "interior": len(interior),
-        "outdoor_levels": sorted(outdoor_levels),
+        "roof_cells": len(roof_cells),
         "per_storey": per_storey,
         "cut_off_pockets": [{"cells": len(g), "at": list(g[0])} for g in cut_off[:10]],
         "cut_off_total": sum(len(g) for g in cut_off),
@@ -299,8 +312,8 @@ def self_test() -> int:
         # The fixture's roof is one level and its rooms are another, so the
         # roof must be classified as outdoors rather than counted as a storey
         # that is 0% reachable.
-        if not report["outdoor_levels"]:
-            failures.append("the roof level should be recognised as outdoors")
+        if not report["roof_cells"]:
+            failures.append("the roof should be recognised as roof, not as holes")
         if report["outside_reachable"] > 4:
             failures.append(f"a sealed box should not let the player outside; "
                             f"{report['outside_reachable']} outdoor cells reachable")
@@ -333,8 +346,7 @@ def main() -> int:
     r = inspect(args.blocks, args.out, args.views)
     print(f"{r['reachable_interior']:,} of {r['interior']:,} INTERIOR cells reachable "
           f"from {r['entrances']} entrance cells")
-    if r["outdoor_levels"]:
-        print(f"  (levels {r['outdoor_levels']} are open sky -- roof, not interior)")
+    print(f"  ({r['roof_cells']:,} standable cells are roof -- open sky, nothing covering them)")
     for level, s in sorted(r["per_storey"].items()):
         print(f"  y={level:<3} {s['reachable']:>6,}/{s['standable']:<6,} = {s['share']:.0%}")
 

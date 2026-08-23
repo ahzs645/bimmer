@@ -255,6 +255,43 @@ Three things this settles that had only been asserted:
   this model — and it is exactly what a Reviter export cannot trigger, because
   its `PredefinedType` is `.NOTDEFINED.` (§3).
 
+## 2b. Both producers, measured, on the same building
+
+The RVT through `parsers/reviter` (156,668,898 bytes out — the byte count
+Reviter's own 2026-08-19 audit records, reproduced here), and the Autodesk
+export of the same model, both through the gate:
+
+| | Autodesk IFC2X3 | Reviter IFC4 |
+|---|---:|---:|
+| products | 41,312 | 40,924 |
+| unclassified (`other`) | **0** | 571 (1.5%) |
+| doors | 1,912 | 1,921 |
+| …within 0.1 cell of a leaf boundary | **35** | **394** |
+| stair containers / flights / aggregated | 104 / 123 / **123** | 23 / 108 / **0** |
+| spiral stairs | 1 | 0 |
+| slabs | 161 | 94 |
+| openings resolving to a host | 94.2% | **99.4%** |
+| products with a Tag | 38,222 | **38,978 (all)** |
+| bounds fallbacks in walkability-critical classes | n/a | **1** |
+| verdict | WARN (units: mm) | **FAIL (stair aggregation)** |
+
+Four things this changes:
+
+- **394 doors sit on a leaf-count boundary, against 35 from Autodesk.** An
+  eleven-fold difference, and it is exactly the `OverallWidth =
+  max(bbox.width, bbox.depth)` defect in §4 item 3 — measured rather than
+  argued. This is now the strongest evidence for that item, not the weakest.
+- **0 of 108 flights are aggregated**, as predicted. 23 `IfcStair` containers
+  do reach the file, so the products exist; nothing relates them to their
+  flights. The fix on the Reviter branch targets exactly this, and the
+  submodule pin predates it.
+- **Only 1 of 2,797 bounds fallbacks lands in a walkability-critical class.**
+  §3 treats those 2,797 as a risk needing grading; graded, they are almost
+  entirely harmless here. That corrects the concern rather than confirming it.
+- **Reviter wins two rows**: every product carries a Tag (Autodesk drops four),
+  and 99.4% of openings resolve to a host against 94.2%. The recovery is ahead
+  of the exporter on the relationships it does keep.
+
 ## 3. Where a Reviter export stands today
 
 From Reviter's independent-reader run of 2026-08-19 (38,978 products, read back
