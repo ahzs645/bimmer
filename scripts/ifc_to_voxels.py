@@ -53,8 +53,8 @@ import trimesh
 # and nothing else -- no geometry, no meshing. Keeping it here meant a tool
 # that only wants to LOOK at the rectification had to import trimesh and the
 # whole voxel engine to reach it. See RECTIFY.md and preview_rectify.py.
-from rectify import (apply_wing, apply_wings_piecewise, compute_wing_transforms,
-                     wing_for_point, wing_records)
+from rectify import (WING_HULL_MARGIN_M, apply_wing, apply_wings_piecewise,
+                     compute_wing_transforms, wing_for_point, wing_records)
 
 # IFC element type -> coarse semantic class
 SEMANTIC_CLASSES = {
@@ -1413,6 +1413,152 @@ def connect_hidden_rooms(winner, grid):
     return connected, hidden_found, len(hidden), carved
 
 
+def close_seam_walls(winner, grid, wings, seam_log=(), band_m=6.0,
+                     min_headroom=2, look_up=8, halo=2):
+    """Wall the envelope that `--rectify` tore open.
+
+    Rectification moves a wing several metres -- a rotation plus a push-apart
+    shove of up to 5 m -- so the floor plate it shares with the spine is cut at
+    the wing hull and the two halves end up metres apart. `apply_wings_piecewise`
+    makes the cut clean; it cannot make the canyon between the halves go away,
+    because the canyon is the point. What it leaves is enclosed floor whose wall
+    is now somewhere else, and a player indoors looking straight out.
+
+    Measured on the real building: of the interior cells that can see straight
+    out of a rectified build, 707 are NOT open in the faithful build, and they
+    sit within 4 m of a wing hull four times as often as interior cells do
+    generally. That is the seam, and this closes it.
+
+    The rule is about the ENVELOPE, not the plate. A column is indoors at a
+    level when it has floor under it and something over it; where an indoors
+    column touches one that is not, the building's skin belongs, and this fills
+    the skin from the floor to the ceiling wherever it is missing. Walling the
+    plate's edge instead left a quarter of the tear open, because a torn plate
+    often runs on past where its roof stops.
+
+    Only within `band_m` of a wing hull: everywhere else, a missing wall is the
+    source model's business and closing it would wall up colonnades and
+    entrance canopies that are meant to be open.
+
+    Runs AFTER the stitcher for the reason `cap_envelope` does -- the corridors
+    have to be cut before anything is built across them -- and keeps `halo`
+    cells clear of every corridor so it cannot seal one.
+
+    Returns the number of cells walled.
+    """
+    if not wings:
+        return 0
+    X, plane, pitch = grid["X"], grid["plane"], grid["pitch"]
+    all_min, dims = grid["all_min"], grid["dims"]
+    wall = CLASS_BLOCKS["wall"]
+    prio = CLASS_PRIORITY.index("wall")
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    # Storey plates only. Counting stair mass and structure as floor too was
+    # tried: it walls around stair landings and structural ledges and strands
+    # a thousand more interior cells for forty fewer leaks.
+    STOOD_ON = {CLASS_BLOCKS["floor"], CLASS_BLOCKS["roof"]}
+    columns: dict[tuple[int, int], set[int]] = {}
+    plates: dict[tuple[int, int], set[int]] = {}
+    for k, (_, block) in winner.items():
+        z = k // plane
+        rem = k - z * plane
+        y = rem // X
+        x = rem - y * X
+        columns.setdefault((x, y), set()).add(z)
+        if block in STOOD_ON:
+            plates.setdefault((x, y), set()).add(z)
+
+    def ceiling_over(column, z):
+        here = columns.get(column, ())
+        return next((z + h for h in range(min_headroom + 1, look_up + 1) if z + h in here),
+                    None)
+
+    def indoors(column, z):
+        return z in plates.get(column, ()) and ceiling_over(column, z) is not None
+
+    # Never build across a corridor the stitcher just cut.
+    blocked = set()
+    for entry in seam_log:
+        (fx, fy, fz), (tx, ty, tz) = entry["from_xyz"], entry["to_xyz"]
+        steps = max(abs(tx - fx), abs(ty - fy), abs(tz - fz)) + 1
+        for i in range(steps):
+            t = i / max(1, steps - 1)
+            cx, cy, cz = (round(fx + (tx - fx) * t), round(fy + (ty - fy) * t),
+                          round(fz + (tz - fz) * t))
+            for dx in range(-halo, halo + 1):
+                for dy in range(-halo, halo + 1):
+                    for dz in range(-1, look_up + 1):
+                        blocked.add((cx + dx, cy + dy, cz + dz))
+
+    slack_cache: dict[tuple[int, int], float] = {}
+
+    def slack(x, y):
+        """Metres inside (negative) or outside (positive) the nearest hull."""
+        hit = slack_cache.get((x, y))
+        if hit is None:
+            px = all_min[0] + x * pitch
+            py = all_min[1] + y * pitch
+            hit = min(max(e[0] * px + e[1] * py + e[2] for e in w["eqs"]) - WING_HULL_MARGIN_M
+                      for w in wings)
+            slack_cache[(x, y)] = hit
+        return hit
+
+    walled = 0
+    for column, levels in list(plates.items()):
+        x, y = column
+        if abs(slack(x, y)) > band_m:
+            continue
+        for z in sorted(levels):
+            here = columns[column]
+            if any(z + h in here for h in range(1, min_headroom + 1)):
+                continue                       # no room to stand, so no wall
+            ceiling = ceiling_over(column, z)
+            if ceiling is None:
+                continue                       # a roof deck, not a room
+            # Only where the skin is ENTIRELY absent. A glazed facade
+            # voxelizes sparsely -- mullions and a few panes -- and filling the
+            # gaps between them turns a curtain wall into concrete. On the real
+            # building, without this the pass wrote 9,842 cells, sealed 326
+            # entrances and cost 4,178 interior cells.
+            if any(z + h in here for h in range(1, ceiling - z)):
+                continue
+            # A doorway is a hole in the envelope on purpose.
+            if any(DOOR_BLOCK in (winner.get(key(x + dx, y + dy, z + h), (0, ""))[1])
+                   for dx, dy in ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1))
+                   for h in range(0, ceiling - z + 1)):
+                continue
+            # A CANYON side: the floor itself stops and the air beyond is
+            # open at head height. Not merely "the roof stops here" -- that
+            # rule was tried, and walling every indoors/outdoors boundary in
+            # the band wrote 9,842 cells, stranded 2,500 interior cells and
+            # sealed 326 entrances to close 96 more leaks. Where the floor
+            # runs on, the missing skin is the source model's business and a
+            # room is worth more than a metric.
+            open_side = False
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                beyond = columns.get((x + dx, y + dy), ())
+                if z not in beyond and (z + 1) not in beyond and (z + 2) not in beyond:
+                    open_side = True
+                    break
+            if not open_side:
+                continue
+            # All the way to the ceiling. A wall three high under a five-high
+            # ceiling stops the eye-level ray and still leaves a slot with
+            # daylight in it, which is the defect with extra steps.
+            for h in range(1, ceiling - z):
+                if (x, y, z + h) in blocked or z + h >= dims[2]:
+                    continue
+                k = key(x, y, z + h)
+                if k in winner:
+                    continue
+                winner[k] = (prio, wall)
+                walled += 1
+    return walled
+
+
 def cap_envelope(winner, grid, min_neighbours=3, min_headroom=2, rounds=3):
     """Roof over interior columns whose floor reaches past the roof above it.
 
@@ -2161,6 +2307,47 @@ def self_test() -> int:
         failures.append(f"the spine half should stop at the hull edge, "
                         f"got x up to {band[:, 0].max():.2f}")
 
+    # A torn seam. One plate at z=3 cut into a spine half (x<10) and a wing
+    # half (x>=14) with a canyon between them, and a ceiling at z=8 that stops
+    # at x=17 while the plate runs on to x=34. The pass must wall BOTH canyon
+    # edges AND the point where the ROOF stops -- walling the plate's edge
+    # instead left a quarter of the real tear open, because a torn plate often
+    # runs past where its roof ends. Everything beyond the seam band is the
+    # source model's business and must be left alone.
+    seam_wing = [{"eqs": [(-1.0, 0.0, 14.0)],        # hull is x >= 14 (metres)
+                  "pivot": (0.0, 0.0), "cos": 1.0, "sin": 0.0, "shift": (0.0, 0.0)}]
+    X = Y = 40
+    seam_grid = {"X": X, "plane": X * Y, "dims": (X, Y, 12), "pitch": 1.0,
+                 "all_min": np.zeros(3)}
+
+    def skey(x, y, z):
+        return x + X * y + X * Y * z
+
+    torn = {}
+    for x in list(range(2, 10)) + list(range(14, 34)):
+        for y in range(2, 34):
+            torn[skey(x, y, 3)] = floor
+            if x < 10 or x <= 17:
+                torn[skey(x, y, 8)] = roof
+    before = len(torn)
+    walled = close_seam_walls(torn, seam_grid, seam_wing, band_m=6.0)
+    if not walled:
+        failures.append("the torn seam should be walled")
+    for x, why in ((9, "the spine's canyon edge"), (14, "the wing's canyon edge")):
+        if not all(skey(x, y, 4) in torn for y in range(4, 30)):
+            failures.append(f"{why} (x={x}) should be walled")
+    for x, why in ((17, "where the roof stops but the floor runs on"),
+                   (25, "unroofed plate beyond the band"),
+                   (33, "the plate's outer rim")):
+        if skey(x, 20, 4) in torn:
+            failures.append(f"{why} (x={x}) should be left alone")
+    if skey(16, 20, 4) in torn:
+        failures.append("a column with indoors on all four sides is not the skin")
+    if torn[skey(5, 20, 3)][1] != CLASS_BLOCKS["floor"]:
+        failures.append("the pass must not overwrite the plate it stands on")
+    if len(torn) - before != walled:
+        failures.append("every walled cell should be a NEW cell")
+
     # And the fast path: an element wholly inside is moved whole, unsubdivided.
     inner = np.array([[1.0, 0, 0], [2.0, 0, 0], [2.0, 1.0, 0]])
     mv, mf = apply_wings_piecewise([wing], inner, np.array([[0, 1, 2]], dtype=np.int64),
@@ -2174,7 +2361,7 @@ def self_test() -> int:
             print(f"  {line}")
         return 1
     print("self-test passed: a light well is capped, a terrace is left open, "
-          "and a plate spanning a seam tears at the seam")
+          "a plate spanning a seam tears at the seam, and the tear is walled")
     return 0
 
 
@@ -2267,6 +2454,10 @@ def main() -> None:
           f"({terrain_cells} grass/dirt cells)", flush=True)
     seams_built, seam_cells, seam_log = stitch_seams(winner, grid)
     print(f"Stitched {seams_built} seam corridors ({seam_cells} cells)", flush=True)
+    seam_walls = close_seam_walls(winner, grid, wings, seam_log)
+    if wings:
+        print(f"Walled {seam_walls} cells along plate edges the wing moves tore open",
+              flush=True)
     # After the stitcher, not before it. Capping adds blocks overhead, and a
     # cap placed first constrains where a seam corridor can be carved -- on the
     # fixture that cost 0.8% of the interior to close eight sky holes. Let the
@@ -2330,6 +2521,7 @@ def main() -> None:
         "doors_grounded": doors_grounded,
         "ceiling_lanterns": lanterns,
         "seam_corridors": seams_built,
+        "seam_wall_cells": seam_walls,
         "slabs_converted": slabs_converted,
         "fences_connected": fences_connected,
         "world_bounds_min_m": grid["all_min"].tolist(),

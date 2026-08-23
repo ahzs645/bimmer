@@ -184,9 +184,65 @@ one placed loosely.
 
 Two things got slightly worse and are not hidden: reachable interior
 share 90.4% to 90.1%, and the largest stranded pocket 1,143 cells to
-1,381. The faithful build is still the cleaner world on see-through
-(1.6%), so rectification has not stopped costing anything — it has
-stopped costing the envelope.
+1,381.
+
+### And then the canyon it leaves
+
+Cutting the plate cleanly does not make the gap go away — the gap is the
+point, because the wing really has moved. What is left is two exposed
+plate edges metres apart with nothing standing on them. Compared against
+the faithful build cell by cell, **707 of the rectified build's 1,125
+see-through cells are not open in the faithful build**, and they sit
+within 4 m of a wing hull four times as often as interior cells do
+generally. That is the seam.
+
+`close_seam_walls` closes it: an exposed plate edge inside the seam band,
+with headroom above it and a ceiling not far overhead, gets a wall from
+the plate up to that ceiling. It runs after the stitcher (corridors have
+to be cut before anything is built across them) and keeps two cells clear
+of every corridor.
+
+| | rectified | + seam walls |
+| --- | ---: | ---: |
+| sees straight out | 1,125 (3.2%) | **845 (2.4%)** |
+| of those, NOT open in the faithful build | 707 | **431** |
+| openings the faithful build also has, kept | 418 | 414 |
+| interior cells | 35,034 | 34,644 |
+| reachable share | 90.1% | 90.1% |
+| cut off | 3,898 | 3,870 |
+| entrance cells | 2,216 | 2,213 |
+| cells walled | — | 1,147 |
+
+`docs/confirm_seam_walls.png` is every one of those 1,147 cells in plan:
+they trace the wing hull boundaries and nothing else.
+
+**Two stricter rules were tried on the real model and rejected on their
+numbers, so do not re-try them blind:**
+
+| rule | leaks closed | what it cost |
+| --- | ---: | --- |
+| wall every indoors/outdoors boundary in the band | 398 | 9,842 cells written, 2,500 interior cells stranded, **326 entrances sealed** |
+| the same, plus skip glazed and door columns | 373 | 3,492 written, 1,150 more cells cut off |
+| count stair and structure mass as floor too | +43 | 1,000 more cells cut off |
+
+Where the floor runs on past its roof, the missing skin is the source
+model's business. A room is worth more than a metric.
+
+### What is still open, and why
+
+Of the 431 leaks the seam walls do not close, traced ray by ray to the
+plate edge each one escapes over:
+
+| | share | |
+| --- | ---: | --- |
+| escapes over a plate edge outside the seam band | 40% | 12–56 m from any hull; widening the band means having no band |
+| no floor plate under the ray at all | 32% | the cell stands on something that is not a storey plate |
+| in the band, but no ceiling above the edge | 26% | the top storey, where there is no ceiling to wall up to |
+| in the band with a ceiling — the rule should have fired | 3% | corridor halo, most likely |
+
+The faithful build is still the cleaner world on see-through (1.6%
+against 2.4%), so rectification has not stopped costing anything — it has
+stopped costing most of the envelope.
 
 ## Roof or hole: decide it by escape
 
@@ -222,6 +278,7 @@ Every one of these was a number first, and looking changed two of them:
 | `docs/confirm_see_through.png` | you could stand indoors and see the horizon | three columns of bare floor plate, and the same build after the fix above |
 | `docs/confirm_isolated_stair.png` | one flight was unreachable, and why | its bottom tread looking east at open sky, then the same flight with its landing back |
 | `docs/confirm_reviter_same_stair.png` | the clean-room decoder recovers the same building | that switchback walked in both worlds; 11 of 16 stand cells are the same cell (REVITER §2d) |
+| `docs/confirm_seam_walls.png` | the seam walls close the tear and nothing else | all 1,147 added cells in plan, tracing the wing hull boundaries |
 
 `make confirm WORLD=out/unbc_1m` regenerates all of them from a build.
 
@@ -231,11 +288,11 @@ At 1 m, after the fixes above:
 
 | | Autodesk faithful | Reviter faithful | Autodesk `--rectify` |
 |---|---:|---:|---:|
-| interior reachable | 36,813 / 39,409 = 93.4% | 36,794 / 39,190 = **93.9%** | 35,444 / 39,342 = 90.1% |
-| cut off (largest pocket) | 2,596 (362) | **2,396 (77)** | 3,898 (1,381) |
+| interior reachable | 36,813 / 39,409 = 93.4% | 36,794 / 39,190 = **93.9%** | 35,054 / 38,924 = 90.1% |
+| cut off (largest pocket) | 2,596 (362) | **2,396 (77)** | 3,870 (1,376) |
 | holes in the envelope | 841 | 535 | **390** |
-| sees straight out | 603 (1.6%) | **533 (1.4%)** | 1,145 (3.2%) |
-| outdoor reachable / openings | 29,760 / 182 | **26,310 / 149** | 29,772 / 174 |
+| sees straight out | 603 (1.6%) | **533 (1.4%)** | 845 (2.4%) |
+| outdoor reachable / openings | 29,760 / 182 | **26,310 / 149** | 29,770 / 169 |
 | stairwells / turning / ISOLATED | 47 / 19 / **0** | 47 / 14 / 1 | 47 / 18 / 2 |
 
 ## After ANY engine change, run this
@@ -267,12 +324,13 @@ verifies itself.
   defect above and is connected now; its top landing is still thin (that
   stand cell has one neighbour). Whatever remains is per-well base
   linkage at extract time; low value.
-- **`--rectify` still leaks twice as much as the faithful build**: 3.2%
-  of interior cells can see straight out against 1.6%. The per-triangle
-  assignment fixed the wing seams; what is left is the plate edge itself,
-  where a wing half and a spine half of the same slab now end a metre
-  apart. The seam stitcher bridges the walkable gap but does not close
-  the envelope.
+- **`--rectify` still leaks half again as much as the faithful build**:
+  2.4% of interior cells can see straight out against 1.6%. The
+  per-triangle assignment and `close_seam_walls` between them took the
+  rectification-caused half of that from 707 cells to 431; the residual
+  is broken down by cause in "What is still open, and why" above. Two
+  stricter wall rules were measured and rejected there — read that table
+  before writing a third.
 - **Rectified build**: 27 wing walls still clip the spine (the source
   model interlocks there — no rigid motion can separate them), and 1
   stepped door pair near a seam.

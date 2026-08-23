@@ -197,14 +197,14 @@ The real model at 1 m, faithful against `--rectify`:
 
 | | faithful | `--rectify` |
 |---|---:|---:|
-| interior cells reachable | **36,813** | 35,444 |
-| interior cells standable | 39,409 | 39,342 |
+| interior cells reachable | **36,813** | 35,054 |
+| interior cells standable | 39,409 | 38,924 |
 | share | **93.4%** | 90.1% |
-| cut off | 2,596 in 10 pockets | 3,898 |
-| largest cut-off pocket | 362 cells | **1,381 cells** |
+| cut off | 2,596 in 10 pockets | 3,870 |
+| largest cut-off pocket | 362 cells | **1,376 cells** |
 | interior cells open to sky | 841 | **390** |
-| interior cells that see straight out | **603 (1.6%)** | 1,145 (3.2%) |
-| outdoor cells reachable | 29,760 through 182 openings | 29,772 through 174 |
+| interior cells that see straight out | **603 (1.6%)** | 845 (2.4%) |
+| outdoor cells reachable | 29,760 through 182 openings | 29,770 through 169 |
 | stairwells ISOLATED | **0** | 2 |
 
 **Rectification buys a cleaner envelope overhead and pays for it on the
@@ -244,13 +244,30 @@ the wing its own centroid falls in, so the plate tears at the hull and its wing
 half travels with the wing. Aggregates still move whole — a stair's flights,
 stringers and railings have to arrive together.
 
-| | centroid | per triangle |
-|---|---:|---:|
-| interior cells that see straight out | 4,240 (10.7%) | **1,145 (3.2%)** |
-| largest such cluster | 718 cells | **159** |
-| holes in the envelope | 1,828 | **390** |
-| floor holes the patcher had to fill | 1,840 | **675** |
-| columns `cap_envelope` had to roof | 1,513 | **642** |
+| | centroid | per triangle | + seam walls |
+|---|---:|---:|---:|
+| interior cells that see straight out | 4,240 (10.7%) | 1,145 (3.2%) | **845 (2.4%)** |
+| of those, NOT open in the faithful build | — | 707 | **431** |
+| largest such cluster | 718 cells | **159** | 159 |
+| holes in the envelope | 1,828 | **390** | 390 |
+| floor holes the patcher had to fill | 1,840 | **675** | 675 |
+| columns `cap_envelope` had to roof | 1,513 | **642** | 642 |
+
+### And the canyon the cut leaves
+
+A clean cut does not close the gap — the gap is the point, because the wing
+really has moved. `close_seam_walls` walls the exposed plate edges inside the
+seam band, from the plate up to the ceiling above it, after the stitcher has
+cut its corridors and keeping two cells clear of each one. 1,147 cells on the
+real model, and `docs/confirm_seam_walls.png` shows every one of them tracing
+the wing hull boundaries and nothing else.
+
+It closes 276 of the 707 rectification-caused leaks and keeps 414 of the 418
+openings the faithful build also has, for 390 interior cells and no change in
+reachable share. Two stricter rules were measured and rejected: walling every
+indoors/outdoors boundary in the band closes 96 more and seals 326 entrances,
+and counting stair and structure mass as floor closes 43 more and cuts off a
+thousand cells. The residual 431 is broken down by cause in HANDOFF.
 
 Two hypotheses were measured and refuted before this one, which is why they are
 written down: elements STRADDLING a hull are not the problem (the worst wing has
