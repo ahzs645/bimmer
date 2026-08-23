@@ -14,7 +14,7 @@ WORLD ?= out/unbc_1m
 MCWEB_WORLD ?= $(WORLD)
 
 .PHONY: help setup parser-setup parser-check contract rectify-preview \
-        p1 p05 all voxels rvt \
+        fixture walk p1 p05 all voxels rvt \
         viewer mcweb blockcraft blockcraft-static blockcraft-stop clean
 
 help:
@@ -31,6 +31,10 @@ help:
 	@echo "  make rvt               RVT=$(RVT) straight through to a world"
 	@echo "  make contract          grade IFC=... against what the engine reads"
 	@echo "  make rectify-preview   see what --rectify would do to IFC=..., in seconds"
+	@echo ""
+	@echo "Checking a build by walking it (no model, no client, no network):"
+	@echo "  make fixture           build a small IFC test building with an off-grid wing"
+	@echo "  make walk              first-person walkthrough of WORLD=$(WORLD)"
 	@echo ""
 	@echo "Renderer dev servers (all load WORLD=$(WORLD); override with WORLD=out/unbc_0p5m):"
 	@echo "  make viewer            Three.js inspection viewer      http://127.0.0.1:8765/"
@@ -70,6 +74,20 @@ contract:
 rectify-preview:
 	$(PY) scripts/preview_rectify.py "$(IFC)" \
 	  --svg out/rectify-preview.svg --json out/rectify-preview.json
+
+# A complete little building -- slabs, walls, openings, doors, an off-grid wing
+# -- that the whole pipeline runs on in seconds. The UNBC model is in neither
+# repository; this is what can be regression-tested without it.
+fixture:
+	$(PY) scripts/make_fixture_building.py --out out/fixture/building.ifc
+	$(PY) scripts/pipeline.py out/fixture/building.ifc --pitch 1.0 \
+	  --name fixture --no-web --no-preview
+
+# Walk the world and render what a player sees. A percentage cannot show a
+# corridor that pinches shut; this can.
+walk:
+	$(PY) scripts/walk_voxels.py "$(WORLD)/blocks.csv" --out "$(WORLD)/walk"
+	$(PY) scripts/audit_walkability.py "$(WORLD)/blocks.csv"
 
 # Stage 0 + the whole pipeline, from the proprietary format.
 rvt:

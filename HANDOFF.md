@@ -84,6 +84,20 @@ no generator. The wing computation reads wall placements only, so
 the same comparison in seconds, on any IFC, after any engine change.
 `--self-test` needs no model. RECTIFY.md.
 
+## Walk it, don't just score it
+
+```sh
+make fixture           # build + convert a small test building, no model needed
+make walk WORLD=out/fixture
+```
+
+Every other check here reports a number, and this file's own trap list
+says why that is not enough: bugs pass the metric that shares their
+assumption. `walk_voxels.py` renders what a player sees along the route
+the audit would take — same movement model, from `walk_physics.py`, so
+the walk and the score cannot disagree. A corridor that pinches shut is
+visible in a frame and invisible in a percentage.
+
 ## After ANY engine change, run this
 
 ```sh

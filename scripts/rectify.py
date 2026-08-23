@@ -140,7 +140,17 @@ def on_grid(angles):
     return (family < 3) | (family > 87)
 
 
-def compute_wing_transforms(model, min_family=250, eps=9.0, min_wing=60):
+# Fitted on UNBC's 14,902 walls: an angle family needed 250 walls (1.7%) and a
+# wing 60 (0.4%). As absolute numbers they are a statement that no building
+# smaller than that one has wings -- a 200-wall building gets no rectification
+# at all, silently, with the run reporting success. Kept as SHARES, with floors
+# low enough for a small building and small enough that on UNBC the share still
+# governs (0.017 x 14,902 = 253, 0.004 x 14,902 = 60: unchanged).
+FAMILY_SHARE, FAMILY_FLOOR = 0.017, 6
+WING_SHARE, WING_FLOOR = 0.004, 4
+
+
+def compute_wing_transforms(model, min_family=None, eps=9.0, min_wing=None):
     """Phase-1 plan rectification: find off-grid WINGS and how to square them.
 
     Buildings like UNBC are several orthogonal grids in one model: 65 % of
@@ -167,6 +177,10 @@ def compute_wing_transforms(model, min_family=250, eps=9.0, min_wing=60):
     P, true_angles, source = wall_plan(model)
     if not len(P):
         return []
+    if min_family is None:
+        min_family = max(FAMILY_FLOOR, round(FAMILY_SHARE * len(P)))
+    if min_wing is None:
+        min_wing = max(WING_FLOOR, round(WING_SHARE * len(P)))
     A = np.asarray(true_angles) % 90.0
     on_axis = on_grid(true_angles)
     # The collision target every candidate rotation and shove is scored
@@ -249,6 +263,7 @@ def compute_wing_transforms(model, min_family=250, eps=9.0, min_wing=60):
 
     placed: list[np.ndarray] = []          # wings already squared, where they end up
     wings = []
+    skipped_flat = 0
     for index, (fam, W) in enumerate(candidates):
         # Not-yet-placed neighbours count where they currently stand: a wing
         # cannot be scored against a position that has not been chosen yet, and
@@ -282,6 +297,15 @@ def compute_wing_transforms(model, min_family=250, eps=9.0, min_wing=60):
                     if c + 0.4 * dist < best_c + 0.4 * math.hypot(*best_t):
                         best_c = c
                         best_t = (round(ux * dist, 3), round(uy * dist, 3))
+        # A wing is a REGION. A cluster whose walls all lie on one line is a
+        # wall run -- a facade, a long corridor side -- and it has no 2-D hull
+        # to test membership against. Qhull raises on it, so this used to be
+        # unreachable only because the old wall floor of 60 made such a cluster
+        # too small to qualify.
+        spread = np.linalg.eigvalsh(np.cov((W - W.mean(axis=0)).T))
+        if spread[0] < 0.25:  # minor axis under half a metre: a line
+            skipped_flat += 1
+            continue
         hull = ConvexHull(W)
         wings.append({"eqs": hull.equations.copy(), "pivot": pivot,
                       "deg": deg, "n": len(W), "shift": best_t,
