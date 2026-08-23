@@ -430,6 +430,54 @@ knowing because neither shows up in a number:
   which is, exactly, the defect this project spent two rounds fixing in the
   voxel engine, reproduced in a different renderer by the same mistake.
 
+### 2g. Floor by floor, what the hull did not claim
+
+Drawing it is not the same as checking it. `make rectify-plan` also audits every
+level for the two things a hull test gets wrong, measured on wall location lines
+and column footprints:
+
+- **broken joins** — the element was TOUCHING something that moved, and did not
+  move with it. Two walls that met at a corner no longer meet.
+- **clashes** — after the move, something that moved crosses it. This is what a
+  reader sees: a wall driven through a room.
+
+| level | elevation | drawn | moved | joins broken | clashes |
+|---|---:|---:|---:|---:|---:|
+| 1450417 | -3.3 | 1,247 | 600 | 28 | 0 |
+| 311 | 0.0 | 4,267 | 1,771 | 73 | **44** |
+| 1487816 | 3.3 | 3,157 | 938 | 63 | 10 |
+| 694 | 14.4 | 9,769 | 3,293 | **161** | 28 |
+| 400176 | 24.3 | 7,502 | 2,474 | 77 | 13 |
+| 402367 | 34.1 | 7,540 | 2,598 | 82 | 25 |
+| | | **34,065** | **11,762** | **485** | **120** |
+
+**The pattern is a category, not a scatter.** 409 of the 605 findings — 68% —
+are `Curtain Wall Mullions` and `Curtain Panels`:
+
+| | broken joins | clashes |
+|---|---:|---:|
+| Curtain Wall Mullions | 255 | 51 |
+| Walls | 155 | 40 |
+| Curtain Panels | 74 | 29 |
+| Columns | 1 | 0 |
+
+The hull is built from `IfcWall` placements (`rectify.py`, `wall_plan`), and a
+curtain wall is not one. So the wall behind the glazing rotates and the glazing
+stays — on every storey, at the same plan position: (113, 900) ft recurs at
+elevations 3.3, 24.3 and 34.1, and (106, 894) at four elevations.
+
+That also accounts for a number this project already had and could not explain:
+**glass voxels fall 5% under `--rectify`, and the per-triangle fix recovered
+none of them.** The curtain wall was never in the hull to be cut.
+
+`docs/confirm_left_behind.png` shows three of them on level 694.
+
+The fix is on this side of the seam, in `scripts/rectify.py`: either build the
+hull from the curtain-wall families as well as `IfcWall`, or propagate wing
+membership through adjacency, so anything joined to a wing travels with it. The
+second is the one that generalises — it is the same rule as "an aggregate moves
+whole", applied to joins rather than to decomposition.
+
 > Reviter's three.js Studio viewer is a separate thing again: it draws the
 > recovery's meshes, and this transform deliberately does not touch them, so the
 > 3D view still shows the building as surveyed. Rectifying the meshes too would

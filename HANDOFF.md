@@ -281,6 +281,7 @@ Every one of these was a number first, and looking changed two of them:
 | `docs/confirm_seam_walls.png` | the seam walls close the tear and nothing else | all 1,147 added cells in plan, tracing the wing hull boundaries |
 | `docs/confirm_rectify_both_decoders.png` | rectification is not an artefact of one exporter | the same six wings squared, from Autodesk placements and from recovered tessellation (REVITER §2e) |
 | `docs/confirm_rectify_floor_plan.png` | the wings square up as a *building*, not as sticks | level 694 before and after, drawn by Reviter's own floor viewer (`make rectify-plan`, REVITER §2f) |
+| `docs/confirm_left_behind.png` | the hull leaves whole categories behind | walls and curtain panels that stayed put and now cross the rooms that moved (REVITER §2g) |
 
 `make confirm WORLD=out/unbc_1m` regenerates all of them from a build.
 
@@ -334,6 +335,15 @@ verifies itself.
   defect above and is connected now; its top landing is still thin (that
   stand cell has one neighbour). Whatever remains is per-well base
   linkage at extract time; low value.
+- **The wing hull is built from `IfcWall` and misses the curtain wall.**
+  Audited floor by floor against the plan (REVITER §2g), the move leaves
+  485 broken joins and 120 clashes over ten levels, and **68% of them are
+  Curtain Wall Mullions and Curtain Panels** — the wall behind the
+  glazing rotates and the glazing stays, on every storey. This is also
+  why glass voxels fall 5% under `--rectify` and the per-triangle fix
+  recovered none of them. Fix in `scripts/rectify.py`: propagate wing
+  membership through adjacency, so anything joined to a wing travels with
+  it. Highest-value item on this list.
 - **`--rectify` still leaks half again as much as the faithful build**:
   2.4% of interior cells can see straight out against 1.6%. The
   per-triangle assignment and `close_seam_walls` between them took the
