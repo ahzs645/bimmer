@@ -267,14 +267,32 @@ def walk(blocks: Path, out_dir: Path, goal=None, stride: int = 2,
     if not seeds:
         raise SystemExit(f"{blocks}: no ground-level door to start from.")
 
-    # Start from ONE door, and an outer one. Seeding from every door at once
-    # makes "the farthest reachable cell" a few steps away -- this building has
-    # a door in every partition, so nowhere is far from some door -- and the
-    # walk collapses to a handful of frames inside one room. The seed farthest
-    # from the crowd is the one on the outside of the building.
+    # Start from ONE door, in the BIGGEST connected piece of the building.
+    #
+    # Seeding from every door at once makes "the farthest reachable cell" a few
+    # steps away, because a building with a door in every partition has nowhere
+    # far from some door. But picking the most peripheral door instead picks an
+    # outlier, and on a real campus with 2,133 entrance cells the outlier was a
+    # door opening into a sealed two-cell pocket -- a two-frame walk of a
+    # 70,000-cell world.
+    #
+    # So: label the components the doors open into, keep the largest, and take
+    # the most peripheral door of THAT. Each cell is visited once across all
+    # the labelling passes.
     if start is None:
-        centre = np.mean(np.array(seeds, dtype=float), axis=0)
-        start = max(seeds, key=lambda p: (p[0] - centre[0]) ** 2 + (p[2] - centre[2]) ** 2)
+        component_of, sizes = {}, {}
+        for seed in seeds:
+            if seed in component_of:
+                continue
+            piece = world.reachable([seed])
+            for cell in piece:
+                component_of.setdefault(cell, seed)
+            sizes[seed] = len(piece)
+        biggest = max(sizes, key=lambda k: sizes[k])
+        in_biggest = [s for s in seeds if component_of.get(s) == component_of.get(biggest)]
+        centre = np.mean(np.array(in_biggest, dtype=float), axis=0)
+        start = max(in_biggest,
+                    key=lambda p: (p[0] - centre[0]) ** 2 + (p[2] - centre[2]) ** 2)
     path = world.route([tuple(start)], goal)
     if len(path) < 2:
         raise SystemExit(f"{blocks}: the entrance leads nowhere walkable.")
