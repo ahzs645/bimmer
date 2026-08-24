@@ -280,9 +280,9 @@ Every one of these was a number first, and looking changed two of them:
 | `docs/confirm_reviter_same_stair.png` | the clean-room decoder recovers the same building | that switchback walked in both worlds; 11 of 16 stand cells are the same cell (REVITER §2d) |
 | `docs/confirm_seam_walls.png` | the seam walls close the tear and nothing else | all 1,147 added cells in plan, tracing the wing hull boundaries |
 | `docs/confirm_rectify_both_decoders.png` | rectification is not an artefact of one exporter | the same six wings squared, from Autodesk placements and from recovered tessellation (REVITER §2e) |
-| `docs/confirm_rectify_floor_plan.png` | the wings square up as a *building*, not as sticks | level 694 before and after, drawn by Reviter's own floor viewer (`make rectify-plan`, REVITER §2f) |
+| `docs/confirm_rectify_floor_plan.png` | the wings square up as a *building*, not as sticks | level 694 before and after, drawn by Reviter's own floor viewer (`make rectify-plan`, REVITER §2f) — **drawn before the frame fix; re-run it** |
 | `docs/confirm_left_behind.png` | the hull leaves whole categories behind | walls and curtain panels that stayed put and now cross the rooms that moved (REVITER §2g) |
-| `docs/confirm_contact_claim.png` | the contact claim clears the hull edge and moves the boundary | all 605 findings placed by distance from the hull, before and after |
+| ~~`docs/confirm_contact_claim.png`~~ | **withdrawn** — plotted from an audit computed 87 m out of frame (REVITER §2g) | |
 
 `make confirm WORLD=out/unbc_1m` regenerates all of them from a build.
 
@@ -376,6 +376,15 @@ level is 87–98%.
   and changed classification. Against +2,608 reachable interior cells and
   −2,004 cut off, that is the trade, and it is worth taking. Levels 6, 7
   and 13 hold 109 of the 118 net increase.
+- **A frame error cost two rounds of plan-side numbers.** The IFC export
+  puts the model's `origin` on the shared placement, so a consumer
+  reading world coordinates sees `feet * 0.3048 + origin` — (−0.46,
+  +87.57) m here. `rectify-plan.ts` did not take it off, so every hull
+  landed 87 m north of its wing and squared whatever was there.
+  Withdrawn: "605 → 526", "68% → 57%", "493 → 7". The curtain-wall
+  finding survives re-measurement (56% of 598). **bimmer's own numbers
+  are unaffected** — it reads placements and geometry through the same
+  world-coordinate path, so its frames agree.
 - **A wing has to be inferred, so its boundary breaks joins somewhere.**
   The model carries no wing structure to use instead — one `IfcBuilding`,
   thirteen storeys, no zones and no element assemblies — so the wing is a

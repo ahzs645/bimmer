@@ -481,22 +481,62 @@ none of them.** The curtain wall was never in the hull to be cut.
 
 `docs/confirm_left_behind.png` shows three of them on level 694.
 
-**Fixed, and the audit says how far.** `adjacency_claims` (bimmer) and
-`contactClaims` (here) claim by contact what the hull could not reach. The named
-defect is gone — the curtain walls at (113, 900) and (−181, −125) travel with
-their wing now, resolving 22, 17 and 10 clashes on levels 402367, 694 and 400176
-— and over all ten levels the findings go 605 → 526, broken joins 485 → 389,
-curtain-wall share 68% → 57%. Clashes rise 120 → 137.
+> **The counts first published here were computed in the wrong frame and are
+> withdrawn.** `export-ifc.ts` writes tessellated coordinates raw and puts the
+> model's `origin` on the shared placement, so a consumer reading the IFC in
+> world coordinates sees `feet * 0.3048 + origin`. On this model that origin is
+> **(−0.46, +87.57) m**, and `rectify-plan.ts` did not take it off — so every
+> hull was applied 87 m north of the wing it was computed from, claiming
+> whatever happened to be there and squaring it. That looks like a working
+> rectification and is not one. Withdrawn with it: "605 → 526", "68% → 57%", and
+> the "493 → 7" hull-edge band. `toFeet` takes the origin now and a test pins it.
 
-The boundary moved rather than vanished: findings within 2 m of the hull edge go
-**493 → 7**, and those at 5–10 m go **16 → 357**, which is the claim's own reach.
+**Re-measured in the model's own frame**, with `adjacency_claims` (bimmer) and
+`contactClaims` (here) claiming by contact what the hull could not reach: the
+wing moves touch **8,812** of 40,571 element records, and leave **598** things
+behind — 412 broken joins and 186 clashes.
+
+| left behind | count |
+|---|---:|
+| Walls | 265 |
+| Curtain Wall Mullions | 221 |
+| Curtain Panels | 112 |
+
+**The finding that motivated the fix survives the correction**: 333 of the 598,
+**56%**, are curtain-wall parts. The hull is built from `IfcWall` placements and
+a curtain wall is not one, whichever frame you measure it in. A clean hull-only
+comparison in the corrected frame has not been run.
+
 This model has no wing structure to use instead — one `IfcBuilding`, thirteen
 storeys, no zones and no element assemblies — so a wing has to be inferred, and
 an inferred boundary breaks joins somewhere by construction.
 
-On the voxel side the same change is decisive: reachable interior 90.1% → 95.3%,
-past the faithful build's 93.4% for the first time, and the largest stranded
-region 1,376 cells → 293.
+On the voxel side the same change is decisive, and those numbers are unaffected:
+bimmer reads wall placements and geometry through the same world-coordinate
+path, so its frames agree. Reachable interior 90.1% → 95.3%, past the faithful
+build's 93.4% for the first time, and the largest stranded region 1,376 cells →
+293.
+
+### 2h. Walked, first person, with the studio's own physics
+
+`scripts/walk-rectified.ts` is what found the frame error. It builds
+`WalkSurfaceIndex` and `WalkCollisionIndex` — what the studio's own walk mode
+stands and steps on — over the recovered triangles with the wing transforms
+applied per triangle, and floods the walkable surface from a start using the
+studio's own 0.6 m step-up and 1.8 m eye. Real triangles, no voxel lattice, so a
+difference in the number is a difference in the building.
+
+| start | as recovered | `--rectify` |
+|---|---:|---:|
+| model centre | 17,325 cells, 477 × 726 ft | **19,042 cells, 435 × 1092 ft** |
+| near (20, 244) m | 473 cells, 120 × 120 ft | 460 cells, 63 × 141 ft |
+
+**Rectification makes ~10% more of the building walkable**, measured without any
+of the voxel engine's assumptions, and the reachable extent grows from 726 ft to
+1,092 ft in y — the wings move and stay connected. The second row is the region
+where the recovery still strands cells: a self-contained pocket in both worlds
+(nothing blocked by rise or by wall), which rectification reshapes rather than
+opens.
 
 > Reviter's three.js Studio viewer is a separate thing again: it draws the
 > recovery's meshes, and this transform deliberately does not touch them, so the
