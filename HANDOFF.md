@@ -290,24 +290,31 @@ Every one of these was a number first, and looking changed two of them:
 
 At 1 m, after the fixes above:
 
-| | Autodesk faithful | Reviter faithful | Autodesk `--rectify` |
-|---|---:|---:|---:|
-| interior reachable | 36,813 / 39,409 = 93.4% | 36,794 / 39,190 = 93.9% | 37,662 / 39,528 = **95.3%** |
-| cut off (largest pocket) | 2,596 (362) | 2,396 (77) | **1,866 (293)** |
-| holes in the envelope | 841 | 535 | **508** |
-| sees straight out | 603 (1.6%) | **533 (1.4%)** | 792 (2.1%) |
-| stairwells / turning / ISOLATED | 47 / 19 / **0** | 47 / 14 / 1 | 47 / 18 / 2 |
-| seam-wall cells | — | — | 1,056 |
-| contact claims | — | — | 2,870 |
+| | Autodesk faithful | Reviter faithful | Autodesk `--rectify` | Reviter `--rectify` |
+|---|---:|---:|---:|---:|
+| interior reachable | 36,813 / 39,409 = 93.4% | 36,794 / 39,190 = 93.9% | 37,662 / 39,528 = **95.3%** | 36,607 / 40,534 = 90.3% |
+| cut off (largest pocket) | 2,596 (362) | 2,396 (77) | **1,866 (293)** | 3,927 (724) |
+| holes in the envelope | 841 | **535** | 508 | 803 |
+| sees straight out | 603 (1.6%) | **533 (1.4%)** | 792 (2.1%) | 892 (2.4%) |
+| stairwells / turning / ISOLATED | 47 / 19 / **0** | 47 / 14 / 1 | 47 / 18 / 2 | 45 / — / — |
+| seam-wall cells | — | — | 1,056 | 1,063 |
+| contact claims | — | — | 2,870 | 2,612 |
 
-**`--rectify` is now the more walkable build.** It was 90.1% reachable
-against the faithful build's 93.4% and stranded a 1,376-cell region;
-claiming by contact what the hull could not reach took it to 95.3% with a
-largest pocket of 293. That is the first time squaring the wings has paid
-for itself on the measure it was always sold on.
+**`--rectify` is now the more walkable build — on the Autodesk export.**
+It was 90.1% reachable against the faithful build's 93.4% and stranded a
+1,376-cell region; claiming by contact what the hull could not reach took
+it to 95.3% with a largest pocket of 293. That is the first time squaring
+the wings has paid for itself on the measure it was always sold on.
 
-(The reviter `--rectify` column predates the contact claim and is not
-comparable; re-run `make rectify-plan` and the conversion to refresh it.)
+**It does not carry over to the recovery, and that is the open question.**
+The same two fixes take the reviter build only from 89.2% to 90.3%, and
+it still strands 3,927 cells against 1,866. The contact claim fires
+almost identically (2,612 against 2,870), so the difference is upstream:
+`wall_plan` reads 7,462 walls from the recovery against 14,902 from the
+export, so the hulls are looser. The stranded cells cluster around
+(16–22, 238–250) m — the +32 degree wing whose pivot the two decoders
+agree on to within a metre (REVITER §2e), so the wing is the same and its
+boundary is not.
 
 `--rectify` finds the **same six wings in both files** — four at +32
 degrees, one at -58, one at -5 — reading per-element placements from the
@@ -331,6 +338,23 @@ assumption and only fell to (a) a *different* metric or (b) walking the
 world in the renderer. Do not skip the audit. Do not trust a pass that
 verifies itself.
 
+Run on the current `--rectify` build, after the piecewise wings, the seam
+walls, the escape-based capping and the contact claim:
+
+| check | result |
+| --- | --- |
+| `verify_blocks` | 4,190 door blocks, **0** orphan halves, **0** un-mirrored hinges, 1 stepped pair; 8 sunk and 9 floating of 2,095; 1,030 fences all with connection states; 554 stair blocks with 47 corner shapes |
+| `audit_walkability` | **95%** interior reachable, 2 of 36 wells not climbable |
+| Anvil round trip | 390 chunks; doors, stairs, fences and glazing all **PASS** |
+
+`audit_walkability` and `inspect_interior` count different denominators
+(34,742/36,542 against 37,662/39,528) and land on the same 95%. Two
+metrics that do not share an assumption agreeing is the point of running
+both.
+
+The weak storey is the top one: y=16 is 70% reachable where every other
+level is 87–98%.
+
 ## Known residuals (all measured, none blocking)
 
 - **Door oddballs** (inherent to 1 m voxels, all pin-able via
@@ -345,6 +369,13 @@ verifies itself.
   defect above and is connected now; its top landing is still thin (that
   stand cell has one neighbour). Whatever remains is per-well base
   linkage at extract time; low value.
+- **The contact claim costs 161 holes to buy 2,608 reachable cells.**
+  Envelope holes go 390 to 508 with `adjacency_claims` on. Traced cell by
+  cell: 65 of the 161 new ones genuinely lost their cover — a small roof
+  or floor piece the claim took with its wing — and 96 were never covered
+  and changed classification. Against +2,608 reachable interior cells and
+  −2,004 cut off, that is the trade, and it is worth taking. Levels 6, 7
+  and 13 hold 109 of the 118 net increase.
 - **A wing has to be inferred, so its boundary breaks joins somewhere.**
   The model carries no wing structure to use instead — one `IfcBuilding`,
   thirteen storeys, no zones and no element assemblies — so the wing is a

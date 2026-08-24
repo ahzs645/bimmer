@@ -384,13 +384,22 @@ Converted all the way through:
 
 | | Autodesk `--rectify` | Reviter `--rectify` |
 |---|---:|---:|
-| interior reachable | 35,054 / 38,924 = **90.1%** | 35,327 / 39,601 = 89.2% |
-| cut off (largest pocket) | **3,870** (1,376) | 4,274 (779) |
-| holes in the envelope | **390** | 526 |
-| sees straight out | **845 (2.4%)** | 949 (2.7%) |
-| outdoor reachable / openings | 29,770 / 169 | **23,421** / 171 |
-| stairwells / turning / ISOLATED | **47 / 18 / 2** | 45 / 12 / 3 |
-| seam-wall cells | 1,147 | 935 |
+| interior reachable | 37,662 / 39,528 = **95.3%** | 36,607 / 40,534 = 90.3% |
+| cut off (largest pocket) | **1,866** (293) | 3,927 (724) |
+| holes in the envelope | **508** | 803 |
+| sees straight out | **792 (2.1%)** | 892 (2.4%) |
+| stairwells | **47** | 45 |
+| seam-wall cells | 1,056 | 1,063 |
+| contact claims | 2,870 | 2,612 |
+
+Both columns are the current engine — piecewise wings, seam walls,
+escape-based capping and the contact claim. The two fixes that took the
+export from 90.1% to 95.3% take the recovery only from 89.2% to 90.3%.
+The contact claim fires almost identically, so the difference is upstream:
+half the walls means looser hulls. The stranded cells cluster at
+(16–22, 238–250) m, around the +32 degree wing whose pivot the two
+decoders agree on to within a metre — so the wing is the same and its
+boundary is not. That is the open item on this path.
 
 The recovery is the cleaner world faithful and the slightly worse one rectified
 — it gives the wing finder half as many walls to cluster, so its seams are
