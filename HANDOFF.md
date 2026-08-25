@@ -381,6 +381,18 @@ level is 87–98%.
   and changed classification. Against +2,608 reachable interior cells and
   −2,004 cut off, that is the trade, and it is worth taking. Levels 6, 7
   and 13 hold 109 of the 118 net increase.
+- **The seam residue cannot be closed by extending walls, and the
+  measurement that says so is cheap.** Extending a cut run along its
+  own axis reaches its moved half in 6% of cases (median gap 25 m — a
+  wing rotates, so its far end is carried away rather than cut).
+  Gating the contact claim on the wall's angle family instead, which
+  63% of the residue argued for, makes it monotonically worse:
+  580 → 639 → 715 → 805 → 847 as the gated reach goes 9 → 30 m,
+  because every element claimed beyond 6 m costs two to four broken
+  joins. Both were built or probed, measured, and reverted (REVITER
+  §2i, LESSONS S23). The open route is a NON-rigid transform — blend
+  the rotation to identity across a transition band — which trades
+  straight walls near the seam for continuity. Not built.
 - **An A/B whose halves came from different inputs.** The first
   contact-claim table paired a `--no-contact` run against a run with
   the flag on — and different `wings.json` files, one computed from the

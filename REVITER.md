@@ -569,6 +569,74 @@ opens.
 
 The pin has since been moved onto the branch carrying both fixes (§0).
 
+### 2i. Two ways to extend a wall pattern, both refuted
+
+The residue in §2g is a boundary, and a boundary looks like something to close.
+Two closings suggest themselves, and the audit answers both without a build.
+
+**Extend the walls.** A wall run cut by the seam should be extendable along its
+own axis until it meets its moved half again. Measured over all 412 broken-join
+pairs — each a stayed element and the moved element it was joined to:
+
+| | |
+|---|---:|
+| gap between them after the move, median | 83.8 ft (25.5 m) |
+| p90 | 215 ft |
+| pairs more than 20 ft apart | 376 of 412 |
+| **reachable by extending the stayed wall along its own axis** | **23 of 412 (6%)** |
+| the same, for pairs that were COLLINEAR before the move | 8 of 150 (5%) |
+
+A wing rotates about its seam with the spine, so an element at the far end of
+one travels tens of metres. Nothing was cut; one side was carried away. Extending
+a wall to cover 25 m of nothing is not repairing a run, it is inventing a
+corridor.
+
+**Extend the wing's membership instead.** The stronger version: don't extend the
+walls, extend which elements COUNT as the wing, along the building's own
+structural grid. The evidence for it is good. Taking the angle between each
+stayed element and the moved partner it was joined to:
+
+| angle between them | share |
+|---|---:|
+| 0–12° or 80–90° (**the same structural grid**) | **63%** |
+| 24–64° (a wing angle: the grids genuinely differ here) | 20% |
+
+For `Walls` alone the same-grid share is **76%**. So the residue is dominated by
+elements that sit on the wing's own grid and were excluded only by the hull's
+convexity — and the 40 m corridor the contact claim's 6 m reach exists to refuse
+is in the SPINE's grid, at 32° to the wing. A gate on the angle family should
+therefore be able to admit the first and refuse the second at any distance,
+replacing a metric bound with a structural one.
+
+It was built (`Wing.family`, `angleFamily`, a per-wing gate in `contactClaims`,
+three fixture tests that all passed) and it makes the model worse, monotonically,
+at every reach:
+
+| directional reach | claims | broken joins | clashes | total |
+|---|---:|---:|---:|---:|
+| 6 m (the metric rule) | 3,207 | 413 | 167 | **580** |
+| 9 m, grid-gated | 3,235 | 471 | 168 | 639 |
+| 12 m | 3,253 | 546 | 169 | 715 |
+| 18 m | 3,263 | 635 | 170 | 805 |
+| 30 m | 3,280 | 660 | 187 | 847 |
+
+**Every element claimed beyond 6 m costs two to four broken joins.** The reason
+is not the gate's accuracy, it is where these elements sit: an element 10 m
+outside the hull that touches something the wing claimed has most of its
+neighbours on the side it is ON, and only the one contact with the side that
+moved. Claiming it trades one broken join for several. The 6 m reach is not a
+crude proxy that a better test improves on — it is already at the point where
+claiming more costs more than it saves.
+
+Both refutations have one cause. **A rigid transform applied to part of a
+building must break something at its edge**, and after a 32° rotation about a
+seam the far end of a wing is tens of metres from where it started. No local
+repair — not a wall extension, not a grid match — reaches across that. What
+would is a non-rigid transform: blending the rotation to identity across a
+transition band so walls near the seam DEFORM instead of breaking. That trades
+straight walls near the seam for continuity, and it is the only version of "fix
+the gap" the geometry leaves open. Not built.
+
 ## 3. Where a Reviter export stands today
 
 From Reviter's independent-reader run of 2026-08-19 (38,978 products, read back
