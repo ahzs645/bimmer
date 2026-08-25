@@ -138,6 +138,7 @@ rectify-plan:
 	  --wings "$(CURDIR)/$(RECTIFY_PLAN_OUT)/wings.json" \
 	  --out-dir "$(CURDIR)/$(RECTIFY_PLAN_OUT)"
 	@echo "SVGs in $(RECTIFY_PLAN_OUT); rasterise with parsers/reviter/scripts/render-svg.ts"
+	@echo "Add --no-contact to the node line for the hull-only ablation (RECTIFY.md)."
 
 # Stage 0 + the whole pipeline, from the proprietary format.
 rvt:

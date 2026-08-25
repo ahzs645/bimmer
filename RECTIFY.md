@@ -259,7 +259,7 @@ stringers and railings have to arrive together.
 placements. A curtain wall is neither: its panels (`IfcPlate`) and mullions
 (`IfcMember`) are their own elements hanging on the facade, so the hull never
 encloses them. The wall behind the glazing rotates 32 degrees and the glazing
-stays, driven through the rooms that moved — 409 of the 605 things the move
+stays, driven through the rooms that moved — 433 of the 638 things the move
 leaves behind, audited floor by floor in the parser's own architectural plan.
 
 `adjacency_claims` claims by CONTACT what the hull could not reach: an element
@@ -286,8 +286,8 @@ faithful build's 93.4%. At 95.3% it is better, and the largest stranded region
 falls from 1,376 cells to 293.
 
 What it does not do is remove the boundary. Placed by distance from the hull,
-the findings move rather than vanish — 493 within 2 m of the hull edge become
-7, and 16 at 5–10 m become 357, which is `reach_m` itself. Widening the reach
+the findings move rather than vanish — 321 within 2 m of the hull edge become
+26, and 56 more than 5 m out become 357, which is `reach_m` itself. Widening it
 moves the boundary again. The model carries no wing structure to use instead
 (one `IfcBuilding`, thirteen storeys, no zones, no element assemblies), so a
 wing has to be inferred, and an inferred boundary breaks joins somewhere by

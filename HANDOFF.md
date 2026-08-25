@@ -280,11 +280,16 @@ Every one of these was a number first, and looking changed two of them:
 | `docs/confirm_reviter_same_stair.png` | the clean-room decoder recovers the same building | that switchback walked in both worlds; 11 of 16 stand cells are the same cell (REVITER §2d) |
 | `docs/confirm_seam_walls.png` | the seam walls close the tear and nothing else | all 1,147 added cells in plan, tracing the wing hull boundaries |
 | `docs/confirm_rectify_both_decoders.png` | rectification is not an artefact of one exporter | the same six wings squared, from Autodesk placements and from recovered tessellation (REVITER §2e) |
-| `docs/confirm_rectify_floor_plan.png` | the wings square up as a *building*, not as sticks | level 694 before and after, drawn by Reviter's own floor viewer (`make rectify-plan`, REVITER §2f) — **drawn before the frame fix; re-run it** |
+| `docs/confirm_rectify_floor_plan.png` | the wings square up as a *building*, not as sticks | level 694 before and after, drawn by Reviter's own floor viewer (`make rectify-plan`, REVITER §2f) |
+| `docs/confirm_rectify_ground_floor.png` | and what it leaves behind, in the same drawing | level 311 before, after, and after with its 31 remaining clashes ringed (REVITER §2g) |
 | `docs/confirm_left_behind.png` | the hull leaves whole categories behind | walls and curtain panels that stayed put and now cross the rooms that moved (REVITER §2g) |
-| ~~`docs/confirm_contact_claim.png`~~ | **withdrawn** — plotted from an audit computed 87 m out of frame (REVITER §2g) | |
+| `docs/confirm_contact_claim.png` | the contact claim clears the hull edge and moves the boundary | 638 findings against 526, by distance from the hull edge and by category — one decode, one flag apart (`--no-contact`) |
 
-`make confirm WORLD=out/unbc_1m` regenerates all of them from a build.
+`make confirm WORLD=out/unbc_1m` regenerates the voxel ones from a build. The
+last four come from the plan side: `make rectify-plan` for the SVGs, then
+again with `--no-contact` for the ablation half of the contact-claim figure,
+and `parsers/reviter/scripts/render-svg.ts` to rasterise (cairosvg cannot —
+the plan's `var(--plan-wall)` fills parse as hex).
 
 ## The three builds, side by side
 
@@ -376,15 +381,16 @@ level is 87–98%.
   and changed classification. Against +2,608 reachable interior cells and
   −2,004 cut off, that is the trade, and it is worth taking. Levels 6, 7
   and 13 hold 109 of the 118 net increase.
-- **A frame error cost two rounds of plan-side numbers.** The IFC export
-  puts the model's `origin` on the shared placement, so a consumer
-  reading world coordinates sees `feet * 0.3048 + origin` — (−0.46,
-  +87.57) m here. `rectify-plan.ts` did not take it off, so every hull
-  landed 87 m north of its wing and squared whatever was there.
-  Withdrawn: "605 → 526", "68% → 57%", "493 → 7". The curtain-wall
-  finding survives re-measurement (56% of 598). **bimmer's own numbers
-  are unaffected** — it reads placements and geometry through the same
-  world-coordinate path, so its frames agree.
+- **A `ConvertResult` holds geometry in two frames 87 m apart, and which
+  one you touch decides whether `origin` comes off.** `meshes` are
+  written raw by `export-ifc.ts` with `origin` on the shared placement,
+  so a hull computed from that IFC has to subtract it (`rectify-walk.ts`
+  does); `elementBounds` — and the `solid`/`loops`/`boundsFeet` the plan
+  is drawn from — already sit in the consumer's frame and must not
+  (`rectifyForPlan` passes zero). Both mistakes have been made here,
+  including "fixing" the plan path that was right and withdrawing a
+  correct table for a day. Verify a frame against the model's own bbox,
+  not against the drawing looking plausible.
 - **A wing has to be inferred, so its boundary breaks joins somewhere.**
   The model carries no wing structure to use instead — one `IfcBuilding`,
   thirteen storeys, no zones and no element assemblies — so the wing is a

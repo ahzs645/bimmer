@@ -452,22 +452,25 @@ and column footprints:
 
 | level | elevation | drawn | moved | joins broken | clashes |
 |---|---:|---:|---:|---:|---:|
-| 1450417 | -3.3 | 1,247 | 600 | 28 | 0 |
-| 311 | 0.0 | 4,267 | 1,771 | 73 | **44** |
-| 1487816 | 3.3 | 3,157 | 938 | 63 | 10 |
-| 694 | 14.4 | 9,769 | 3,293 | **161** | 28 |
-| 400176 | 24.3 | 7,502 | 2,474 | 77 | 13 |
-| 402367 | 34.1 | 7,540 | 2,598 | 82 | 25 |
-| | | **34,065** | **11,762** | **485** | **120** |
+| 1450417 | -3.3 | 1,247 | 618 | 36 | 0 |
+| 311 | 0.0 | 4,267 | 1,793 | 81 | **86** |
+| 1487816 | 3.3 | 3,157 | 1,039 | 50 | 2 |
+| 694 | 14.4 | 9,769 | 3,312 | **161** | 38 |
+| 400176 | 24.3 | 7,502 | 2,461 | 69 | 12 |
+| 402367 | 34.1 | 7,540 | 2,546 | 85 | 15 |
+| | | **34,065** | **11,859** | **485** | **153** |
 
-**The pattern is a category, not a scatter.** 409 of the 605 findings — 68% —
+(Four more levels carry a floor sketch and almost nothing else; they contribute
+3 findings and are in the totals.)
+
+**The pattern is a category, not a scatter.** 433 of the 638 findings — 68% —
 are `Curtain Wall Mullions` and `Curtain Panels`:
 
 | | broken joins | clashes |
 |---|---:|---:|
-| Curtain Wall Mullions | 255 | 51 |
-| Walls | 155 | 40 |
-| Curtain Panels | 74 | 29 |
+| Curtain Wall Mullions | 241 | 64 |
+| Walls | 147 | 57 |
+| Curtain Panels | 96 | 32 |
 | Columns | 1 | 0 |
 
 The hull is built from `IfcWall` placements (`rectify.py`, `wall_plan`), and a
@@ -481,46 +484,57 @@ none of them.** The curtain wall was never in the hull to be cut.
 
 `docs/confirm_left_behind.png` shows three of them on level 694.
 
-> **The counts first published here were computed in the wrong frame and are
-> withdrawn.** `export-ifc.ts` writes tessellated coordinates raw and puts the
-> model's `origin` on the shared placement, so a consumer reading the IFC in
-> world coordinates sees `feet * 0.3048 + origin`. On this model that origin is
-> **(−0.46, +87.57) m**, and `rectify-plan.ts` did not take it off — so every
-> hull was applied 87 m north of the wing it was computed from, claiming
-> whatever happened to be there and squaring it. That looks like a working
-> rectification and is not one. Withdrawn with it: "605 → 526", "68% → 57%", and
-> the "493 → 7" hull-edge band. `toFeet` takes the origin now and a test pins it.
+**Fixed, and the audit says how far.** `adjacency_claims` (bimmer) and
+`contactClaims` (here) claim by contact what the hull could not reach: an
+element the hull missed travels with the wing when it TOUCHES something the wing
+claimed, bounded by the element's FARTHEST corner so that a corridor merely
+reaching a wing is not dragged whole into it. Both columns below are the same
+decode and the same six wings, one flag apart — `--no-contact` is the left one.
 
-**Re-measured in the model's own frame**, with `adjacency_claims` (bimmer) and
-`contactClaims` (here) claiming by contact what the hull could not reach: the
-wing moves touch **8,812** of 40,571 element records, and leave **598** things
-behind — 412 broken joins and 186 clashes.
+| ten levels | hull only | hull + contact |
+|---|---:|---:|
+| element records moved | 14,795 | **17,785** |
+| claimed by contact | — | 3,130 |
+| broken joins | 485 | **389** |
+| clashes | 153 | **137** |
+| total findings | 638 | **526** |
+| curtain-wall share | 433 (68%) | **298 (57%)** |
 
-| left behind | count |
-|---|---:|
-| Walls | 265 |
-| Curtain Wall Mullions | 221 |
-| Curtain Panels | 112 |
-
-**The finding that motivated the fix survives the correction**: 333 of the 598,
-**56%**, are curtain-wall parts. The hull is built from `IfcWall` placements and
-a curtain wall is not one, whichever frame you measure it in. A clean hull-only
-comparison in the corrected frame has not been run.
+The named defect is gone — the curtain walls at (113, 900) and (−181, −125)
+travel with their wing now. And the boundary MOVED rather than vanished:
+findings within 2 m of the hull edge go **321 → 26**, while those more than 5 m
+out go **56 → 357**, which is the claim's own 6 m reach. `docs/confirm_contact_claim.png`
+is that comparison; `docs/confirm_rectify_ground_floor.png` is level 311 before,
+after, and with its 31 remaining clashes ringed.
 
 This model has no wing structure to use instead — one `IfcBuilding`, thirteen
 storeys, no zones and no element assemblies — so a wing has to be inferred, and
 an inferred boundary breaks joins somewhere by construction.
 
-On the voxel side the same change is decisive, and those numbers are unaffected:
-bimmer reads wall placements and geometry through the same world-coordinate
-path, so its frames agree. Reachable interior 90.1% → 95.3%, past the faithful
-build's 93.4% for the first time, and the largest stranded region 1,376 cells →
-293.
+On the voxel side the same change is decisive: reachable interior 90.1% → 95.3%,
+past the faithful build's 93.4% for the first time, and the largest stranded
+region 1,376 cells → 293.
+
+> **On the frame these numbers are measured in.** A `ConvertResult` carries
+> geometry in TWO frames at once, and which one you are touching decides whether
+> the model's `origin` comes off. `meshes` span y −187.6 .. 187.5 m;
+> `elementBounds` — and the `solid`, `loops` and `boundsFeet` the plan is drawn
+> from — span y −99.7 .. 274.9 m. Same 375 m building, **87.6 m apart**, which is
+> `origin.y` exactly. `export-ifc.ts` writes tessellated MESH coordinates raw and
+> puts `origin` on the shared placement, so a hull computed from that IFC must
+> have the origin taken off before it touches `meshes` (`rectify-walk.ts` does),
+> and must NOT before it touches `elementBounds` (`rectifyForPlan` passes zero).
+> Both directions of that mistake have been made here, one of them by
+> "correcting" the plan path that was already right and withdrawing this table
+> for a day. A frame is not verified by the drawing looking plausible: verify it
+> against the model's own bbox, which is one line and cannot lie about position.
+> `tests/rectify-plan.test.ts` pins both directions.
 
 ### 2h. Walked, first person, with the studio's own physics
 
-`scripts/walk-rectified.ts` is what found the frame error. It builds
-`WalkSurfaceIndex` and `WalkCollisionIndex` — what the studio's own walk mode
+`scripts/walk-rectified.ts` is what turned up the two-frame split above: it
+reads `meshes`, so it is the caller that DOES have to take the origin off. It
+builds `WalkSurfaceIndex` and `WalkCollisionIndex` — what the studio's own walk mode
 stands and steps on — over the recovered triangles with the wing transforms
 applied per triangle, and floods the walkable surface from a start using the
 studio's own 0.6 m step-up and 1.8 m eye. Real triangles, no voxel lattice, so a
