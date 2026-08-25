@@ -287,7 +287,7 @@ falls from 1,376 cells to 293.
 
 What it does not do is remove the boundary. Placed by distance from the hull,
 the findings move rather than vanish — 321 within 2 m of the hull edge become
-26, and 56 more than 5 m out become 357, which is `reach_m` itself. Widening it
+**1**, and 56 more than 5 m out become 519, which is `reach_m` itself. Widening it
 moves the boundary again. The model carries no wing structure to use instead
 (one `IfcBuilding`, thirteen storeys, no zones, no element assemblies), so a
 wing has to be inferred, and an inferred boundary breaks joins somewhere by

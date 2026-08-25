@@ -281,9 +281,9 @@ Every one of these was a number first, and looking changed two of them:
 | `docs/confirm_seam_walls.png` | the seam walls close the tear and nothing else | all 1,147 added cells in plan, tracing the wing hull boundaries |
 | `docs/confirm_rectify_both_decoders.png` | rectification is not an artefact of one exporter | the same six wings squared, from Autodesk placements and from recovered tessellation (REVITER §2e) |
 | `docs/confirm_rectify_floor_plan.png` | the wings square up as a *building*, not as sticks | level 694 before and after, drawn by Reviter's own floor viewer (`make rectify-plan`, REVITER §2f) |
-| `docs/confirm_rectify_ground_floor.png` | and what it leaves behind, in the same drawing | level 311 before, after, and after with its 31 remaining clashes ringed (REVITER §2g) |
+| `docs/confirm_rectify_ground_floor.png` | and what it leaves behind, in the same drawing | level 311 before, after, and after with its remaining clashes ringed (REVITER §2g) |
 | `docs/confirm_left_behind.png` | the hull leaves whole categories behind | walls and curtain panels that stayed put and now cross the rooms that moved (REVITER §2g) |
-| `docs/confirm_contact_claim.png` | the contact claim clears the hull edge and moves the boundary | 638 findings against 526, by distance from the hull edge and by category — one decode, one flag apart (`--no-contact`) |
+| `docs/confirm_contact_claim.png` | the contact claim clears the hull edge and moves the boundary | 638 findings against 580, by distance from the hull edge and by category — one decode, ONE wings file, one flag apart (`--no-contact`) |
 
 `make confirm WORLD=out/unbc_1m` regenerates the voxel ones from a build. The
 last four come from the plan side: `make rectify-plan` for the SVGs, then
@@ -381,6 +381,14 @@ level is 87–98%.
   and changed classification. Against +2,608 reachable interior cells and
   −2,004 cut off, that is the trade, and it is worth taking. Levels 6, 7
   and 13 hold 109 of the 118 net increase.
+- **An A/B whose halves came from different inputs.** The first
+  contact-claim table paired a `--no-contact` run against a run with
+  the flag on — and different `wings.json` files, one computed from the
+  Autodesk IFC and one from the recovered IFC. Both are legitimate
+  inputs, which is exactly why the mismatch was invisible: every number
+  looked reasonable. Corrected, the improvement is 638 → 580, not
+  638 → 526. An ablation has to name its fixed inputs, not just its
+  flag.
 - **A `ConvertResult` holds geometry in two frames 87 m apart, and which
   one you touch decides whether `origin` comes off.** `meshes` are
   written raw by `export-ifc.ts` with `origin` on the shared placement,

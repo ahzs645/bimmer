@@ -493,19 +493,29 @@ decode and the same six wings, one flag apart — `--no-contact` is the left one
 
 | ten levels | hull only | hull + contact |
 |---|---:|---:|
-| element records moved | 14,795 | **17,785** |
-| claimed by contact | — | 3,130 |
-| broken joins | 485 | **389** |
-| clashes | 153 | **137** |
-| total findings | 638 | **526** |
-| curtain-wall share | 433 (68%) | **298 (57%)** |
+| element records moved | 14,795 | **17,994** |
+| claimed by contact | — | 3,207 |
+| broken joins | 485 | **413** |
+| clashes | 153 | 167 |
+| total findings | 638 | **580** |
+| curtain-wall share | 433 (68%) | **311 (54%)** |
+
+Both columns are one decode and one `wings.json` — the one `make rectify-plan`
+writes from the Autodesk IFC — with `--no-contact` the only difference. That
+sounds too obvious to state, and it is stated because the first version of this
+table was NOT that: its two halves came from wings computed off two different
+IFCs, which is not an ablation of the flag, it is an ablation of the flag plus
+the input.
 
 The named defect is gone — the curtain walls at (113, 900) and (−181, −125)
-travel with their wing now. And the boundary MOVED rather than vanished:
-findings within 2 m of the hull edge go **321 → 26**, while those more than 5 m
-out go **56 → 357**, which is the claim's own 6 m reach. `docs/confirm_contact_claim.png`
-is that comparison; `docs/confirm_rectify_ground_floor.png` is level 311 before,
-after, and with its 31 remaining clashes ringed.
+travel with their wing now. Clashes rise, and the headline improvement is a
+modest 9%; **the decisive number is where the residue SITS.** Findings within
+2 m of the hull edge go **321 → 1**, and 2–5 m goes 261 → 60, while 5–10 m goes
+47 → 401. The hull edge is swept clean and the boundary is pushed out to the
+claim's own 6 m reach — it moves rather than vanishing.
+`docs/confirm_contact_claim.png` is that comparison;
+`docs/confirm_rectify_ground_floor.png` is level 311 before, after, and with its
+remaining clashes ringed.
 
 This model has no wing structure to use instead — one `IfcBuilding`, thirteen
 storeys, no zones and no element assemblies — so a wing has to be inferred, and
