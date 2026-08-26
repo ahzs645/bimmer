@@ -283,6 +283,8 @@ Every one of these was a number first, and looking changed two of them:
 | `docs/confirm_rectify_floor_plan.png` | the wings square up as a *building*, not as sticks | level 694 before and after, drawn by Reviter's own floor viewer (`make rectify-plan`, REVITER §2f) |
 | `docs/confirm_rectify_ground_floor.png` | and what it leaves behind, in the same drawing | level 311 before, after, and after with its remaining clashes ringed (REVITER §2g) |
 | `docs/confirm_left_behind.png` | the hull leaves whole categories behind | walls and curtain panels that stayed put and now cross the rooms that moved (REVITER §2g) |
+| `docs/confirm_elastic_seam.png` | making the seam elastic does not save the joins | 169,116 touching pairs scored under rigid and five band widths, against the grid share rectification exists for (REVITER §2j) |
+| `docs/confirm_elastic_plan.png` | and the drawing says so without the numbers | level 694 as recovered, rectified rigidly, and with a 5 m elastic band — corridors smeared into ribbons |
 | `docs/confirm_contact_claim.png` | the contact claim clears the hull edge and moves the boundary | 638 findings against 580, by distance from the hull edge and by category — one decode, ONE wings file, one flag apart (`--no-contact`) |
 
 `make confirm WORLD=out/unbc_1m` regenerates the voxel ones from a build. The
@@ -390,9 +392,21 @@ level is 87–98%.
   580 → 639 → 715 → 805 → 847 as the gated reach goes 9 → 30 m,
   because every element claimed beyond 6 m costs two to four broken
   joins. Both were built or probed, measured, and reverted (REVITER
-  §2i, LESSONS S23). The open route is a NON-rigid transform — blend
-  the rotation to identity across a transition band — which trades
-  straight walls near the seam for continuity. Not built.
+  §2i, LESSONS S23).
+- **And the non-rigid transform those pointed to is built, and also
+  does not pay.** A smoothstep ramp across the hull boundary, summing
+  each wing's displacement so the field is continuous everywhere and
+  exact inside. Scored on all 169,116 pairs that touched in the source
+  model, rigid hull-only breaks 2,229 and keeps 60.3% of wall runs on
+  the grid; elastic breaks 5,009 → 14,158 as the band goes 5 → 80 m,
+  with on-grid falling to 22.1% and p99 strain at 244%. Strain is the
+  displacement over the band, and a wing's far end has moved tens of
+  metres — so a strained join breaks just as a torn one does (REVITER
+  §2j, LESSONS S24). **Kept behind `--band-metres`, off by default**,
+  for the one question the plan cannot answer: a plate STRETCHED across
+  a seam is walkable where a torn one is a canyon, so it may still buy
+  reachable interior. That needs the transform ported into
+  `ifc_to_voxels.py` and is the next thing to try.
 - **An A/B whose halves came from different inputs.** The first
   contact-claim table paired a `--no-contact` run against a run with
   the flag on — and different `wings.json` files, one computed from the

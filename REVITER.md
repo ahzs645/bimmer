@@ -632,10 +632,67 @@ Both refutations have one cause. **A rigid transform applied to part of a
 building must break something at its edge**, and after a 32° rotation about a
 seam the far end of a wing is tens of metres from where it started. No local
 repair — not a wall extension, not a grid match — reaches across that. What
-would is a non-rigid transform: blending the rotation to identity across a
-transition band so walls near the seam DEFORM instead of breaking. That trades
-straight walls near the seam for continuity, and it is the only version of "fix
-the gap" the geometry leaves open. Not built.
+might is a non-rigid transform, and §2j builds one.
+
+### 2j. The elastic seam: built, measured, and kept for a different question
+
+If a rigid transform must break its edge, make the edge not an edge.
+`rectifyForPlan({ bandMetres })` replaces the step at the wing hull with a
+ramp: the rotation goes from full to none across a band straddling the
+boundary, so an element spanning it is stretched rather than torn off. Each
+wing contributes its own DISPLACEMENT, weighted by a smoothstep on its hull
+distance, and they sum — not "pick the nearest wing and apply a fraction of its
+rotation", which is a different map either side of wherever two wings' bands
+cross and so trades one discontinuity for several. The field is continuous
+everywhere and exact at full weight; `tests/rectify-plan.test.ts` pins both.
+
+**The audit cannot score it.** "Was this element moved, and was it touching
+something that was" are categories only a step function has; under a continuous
+field everything moves a little and those counts fall for free. So the
+comparison is made on a measure neither mode owns: **all 169,116 pairs of
+structural elements that TOUCHED in the source model**, scored by whether they
+still touch afterwards, alongside the share of wall runs left within 3° of the
+grid — which is what rectifying is FOR — and the strain in each run's length.
+
+| transform | adjacencies broken | on grid | runs strained > 2% | p99 strain |
+|---|---:|---:|---:|---:|
+| rigid, hull only | **2,229** | **60.3%** | 0 | 0 |
+| rigid + contact claim (shipped) | 7,847 | 57.8% | 0 | 0 |
+| elastic, 5 m band | 5,009 | 58.8% | 8.7% | **244%** |
+| elastic, 10 m | 7,867 | 56.0% | 17.8% | 178% |
+| elastic, 20 m | 9,381 | 51.9% | 27.1% | 106% |
+| elastic, 40 m | 12,131 | 40.1% | 48.0% | 62% |
+| elastic, 80 m | 14,158 | 22.1% | 76.9% | 40% |
+
+**It does not pay on the plan.** Every band loses ground on the grid, and only
+the narrowest beats the shipped transform on joins — while straining a twelfth
+of the building's wall runs, the worst of them by 244%. There is no band that
+is both gentle and local, and the reason is arithmetic: **strain is the wing's
+displacement divided by the band width**, and that displacement is tens of
+metres at the far end of a wing. To hold strain under 10% where a wall has
+moved 30 m you need a 300 m band, which is the whole building — the last row,
+where 78% of the building is deformed and the grid is gone.
+
+And a strained join is a broken join. Two elements half a foot apart, in a
+field straining at 100%, end up a foot apart: continuity is not sufficient,
+small strain is, and small strain is not on offer. That is the thing I had
+wrong when I proposed this — "walls near the seam deform instead of breaking"
+treats deformation as free, and past a certain magnitude deformation IS
+breaking.
+
+`docs/confirm_elastic_seam.png` is the trade-off; `docs/confirm_elastic_plan.png`
+is level 694 drawn three ways, and it agrees with the numbers without them: the
+tear is gone and in its place the corridors smear into tapered ribbons and the
+plates drag into wedges.
+
+**Kept anyway, off by default, for one question the plan cannot answer.** On the
+voxel side the seam tear is what `close_seam_walls` papers over with 1,147 cells
+of invented wall, and a plate STRETCHED across the seam is walkable where a
+plate torn at it is a canyon. Whether elasticity buys reachable interior is a
+different measurement from either of the two above, it needs the transform
+ported into `ifc_to_voxels.py`, and it is the only reason this code is here
+rather than deleted like the grid gate in §2i. `--band-metres` on
+`scripts/rectify-plan.ts` draws it.
 
 ## 3. Where a Reviter export stands today
 
