@@ -430,8 +430,9 @@ level is 87–98%.
   thirteen storeys, no zones and no element assemblies — so the wing is a
   hull of wall angles plus a contact claim, and joins break at whichever
   boundary is outermost. `adjacency_claims` moved that boundary from the
-  hull edge (493 findings within 2 m of it) to its own reach (357 at
-  5–10 m). Widening `reach_m` moves it again; it does not remove it.
+  hull edge (321 findings within 2 m of it) to its own reach (401 at
+  5–10 m, 118 beyond). Widening `reach_m` moves it again; it does not
+  remove it, and §2i/§2j measured two attempts to remove it instead.
 - **`--rectify` still leaks half again as much as the faithful build**:
   2.4% of interior cells can see straight out against 1.6%. The
   per-triangle assignment and `close_seam_walls` between them took the
