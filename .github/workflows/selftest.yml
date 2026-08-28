@@ -1,0 +1,127 @@
+name: Self-tests (no model)
+
+# Everything checkable WITHOUT the proprietary model.
+#
+# The 67 MB source model is in neither repository and never will be, so this
+# workflow must run to green on a fresh clone with nothing but PyPI. Nothing
+# here may reference a model file, a model path, or where one comes from.
+#
+# What it covers:
+#   * the six engine self-tests (`make selftest`) -- the synthetic checks that
+#     back the measurements written down in HANDOFF.md / REVITER.md /
+#     RECTIFY.md / LESSONS.md, and that until now only ran when someone
+#     remembered to run them;
+#   * the fixture building (`make fixture`) -- a small synthetic IFC driven
+#     end to end through the real pipeline, so a refactor that breaks a stage
+#     nothing self-tests still gets caught.
+#
+# Deliberately separate from pages.yml: this must keep reporting when a
+# renderer build breaks, and it shares neither that workflow's concurrency
+# group nor its `pages: write` / `id-token: write` permissions.
+
+on:
+  # Every branch, not just main: the numbers rot on feature branches, which is
+  # where they need catching. Same-repo pull requests therefore run this twice
+  # (~1 min each). If that is unwanted, narrow this to `branches: [main]`.
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    name: engine self-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # parsers/reviter is deliberately NOT checked out. rvt_to_ifc.py
+          # --self-test asserts that an absent submodule yields an actionable
+          # preflight error, so an unchecked-out submodule is part of what is
+          # under test here; and reviter runs its own CI in its own repository.
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.11 is what the pipeline is developed and measured against, and
+          # what ifcopenshell 0.8.5 ships manylinux wheels for.
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-pipeline.txt
+
+      # Needed by rvt_to_ifc.py --self-test, which drives a stub parser through
+      # the IFC contract gate. Its preflight refuses outright when node is not
+      # on PATH, so without this step that self-test FAILS -- it does not skip.
+      # No npm install: the stub writes its own throwaway package.json.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Measured: the six self-tests import only ifcopenshell, numpy, scipy,
+      # pillow and trimesh (which pulls shapely). litemapy and mcschematic are
+      # reached only by the .litematic/.schem writers, which the fixture job
+      # below exercises. One list is installed rather than two so there is no
+      # second copy of the dependency set to drift.
+      - name: Install pipeline dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-pipeline.txt
+
+      # Driven through the Makefile target rather than six copied command
+      # lines, so a self-test added to `selftest` is picked up here without
+      # anyone remembering to edit this file. PY= overrides the .venv
+      # interpreter path the Makefile uses locally.
+      - name: make selftest
+        run: make selftest PY=python
+
+  fixture:
+    name: fixture building end to end
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-pipeline.txt
+
+      - name: Install pipeline dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-pipeline.txt
+
+      # A complete little building -- slabs, walls, openings, doors, an
+      # off-grid wing -- generated from scratch and run through every pipeline
+      # stage in seconds. Verified deterministic: two runs produce a
+      # byte-identical blocks.csv.
+      - name: make fixture
+        run: make fixture PY=python
+
+      # No threshold is asserted. The fixture's walkability is recorded in the
+      # log so a change in it is visible in the diff between two runs, without
+      # this workflow going red for a legitimate engine change. Pinning these
+      # numbers is a deliberate follow-up, not something to guess at here.
+      - name: Record fixture walkability
+        run: |
+          test -s out/fixture/blocks.csv
+          test -s out/fixture/summary.json
+          python scripts/audit_walkability.py out/fixture/blocks.csv
+
+      # `make fixture-recovery` is NOT run here. It converts the same building
+      # a second time shaped the way an RVT recovery writes it, and the two
+      # are supposed to agree -- REVITER.md records both at 656/669 = 98%.
+      # They do not agree today (99% Revit-shaped vs 50% recovery-shaped), and
+      # the target only prints the two numbers rather than comparing them, so
+      # it would either pass while disagreeing or, with a comparison added,
+      # fail on its first run. Add it once the recovery path is fixed.

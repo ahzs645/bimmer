@@ -708,7 +708,7 @@ validation of 2026-08-02.
 | Spiral stair enum | `ShapeType` | `PredefinedType`, but always `.NOTDEFINED.` — the recovery does not declare a stair's shape | medium |
 | `OverallWidth` | Revit's own parameter | `max(bbox.width, bbox.depth)` — a diagonal, not a width | medium |
 | Door bodies | native | 1,921 doors, **100.0% centre / 99.9% size** on the half-foot overlay | low |
-| Floor plates | 107 tagged slabs | **94** slabs; "floor/landing recovery remains incomplete" | high |
+| Floor plates | 107 slab Tags (161 entities) | **94** slabs — and the 13 are a CLASS difference, not missing floor; joined on `Tag` across every floor class it is **182 elements against 172** | closed |
 | Host relationships | present | present — 1,932 persisted, none invented | low now |
 | `Tag` | present | present, 41,709 with native `UniqueId` | — |
 | `GlobalId` | Autodesk-derived | Reviter-derived — **the two do not match** | medium |
@@ -750,6 +750,29 @@ frame, so the final block list hides the error behind an overlap. A stringer
 running clear of its flight would render as curtain-wall concrete with the block
 histogram still looking correct. `solid_faces_by_class` sees it; `blocks_by_id`
 does not. Do not regression-test this class of bug on the block list.
+
+**The floor-plate gap was an artifact of how it was counted, and it is
+closed.** "94 slabs against 107" was carried here as the one HIGH severity row
+for weeks. Joined on `Tag` — the only id that survives a change of producer —
+**all 94 match, and none is spurious.** The 13 unmatched Tags are 12 Revit
+Roofs, which this decoder writes as `IfcRoof` where Autodesk writes an
+`IfcRoof` container plus N `IfcSlab(.ROOF.)` parts sharing the parent's Tag,
+and one ramp landing, which this decoder keeps inside its `IfcRamp`. Plan
+footprints of the 12 agree to 0.7%; the 94 matched agree on every bounding-box
+face to under 0.05 m. Not one Revit Floor is missing (68/68), and landings are
+26 of 27 — the 27th is the ramp's.
+
+Measured without using `Tag` at all, by rasterising every near-horizontal face
+of `IfcSlab` + `IfcCovering` + `IfcRoof` + `IfcRamp` at 0.1 m into half-metre
+bands: **99.92% of Autodesk's standable surface is reproduced within half a
+metre, and 87 sq m of 103,935 is genuinely absent** — 0.084%, scattered, and
+dominated by ramp slopes and raster edges rather than by any plate.
+
+The defect was in `check_ifc_contract.py`, which counted `IfcSlab` ENTITIES.
+That number cannot survive a change of producer in either of its halves: one
+producer decomposes a roof into parts and one does not, and one calls a ramp
+landing a slab and one does not. It counts distinct `Tag`s across all four
+floor classes now, and reports 182 for this decoder against 172 for Autodesk.
 
 **The 2,797 bounds fallbacks need grading, not a percentage.** An
 axis-aligned box is nearly harmless for a wall, because a wall *is* a box. It is

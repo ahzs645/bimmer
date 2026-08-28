@@ -398,18 +398,55 @@ def check_openings(model, report: Report) -> None:
         report.add("openings", WARN, headline, consequence, detail)
 
 
-def check_floor_plates(model, report: Report) -> None:
-    """Floors are what the walkability audit walks on."""
-    slabs = len(_by_type(model, "IfcSlab"))
-    coverings = len(_by_type(model, "IfcCovering"))
-    roofs = len(_by_type(model, "IfcRoof"))
-    storeys = len(_by_type(model, "IfcBuildingStorey"))
-    total = slabs + coverings + roofs
+# Everything a player can stand on, whatever class the producer chose for it.
+FLOOR_CLASS_TYPES = ("IfcSlab", "IfcCovering", "IfcRoof", "IfcRamp")
 
-    detail = {"slabs": slabs, "coverings": coverings, "roofs": roofs,
-              "storeys": storeys, "floor_class_products": total}
-    headline = (f"{slabs} slabs + {coverings} coverings + {roofs} roofs "
-                f"across {storeys} storeys")
+
+def check_floor_plates(model, report: Report) -> None:
+    """Floors are what the walkability audit walks on.
+
+    Counted by distinct `Tag` across every floor class, NOT by IfcSlab
+    entities, and that is not a detail. Producers disagree about both halves
+    of an entity count:
+
+    - **Class.** A Revit Roof is one `IfcRoof` to one producer and an
+      `IfcRoof` container plus N `IfcSlab(.ROOF.)` parts to another. A Revit
+      Ramp is one `IfcRamp` to one and a container plus a separate
+      `IfcSlab(.LANDING.)` to the other.
+    - **Cardinality.** The decomposing producer writes 161 `IfcSlab` entities
+      for 107 Revit elements, all sharing the parent's Tag.
+
+    Counting `IfcSlab` entities alone therefore reported this building's
+    recovery as 94 against 107 -- "floor/landing recovery remains incomplete",
+    carried as a HIGH severity gap in REVITER.md for weeks. It was an artifact
+    of this function. Joined on Tag across the four classes, all 94 match, the
+    13 "missing" are 12 Revit Roofs and one ramp landing that the recovery
+    writes under their own class with plan footprints agreeing to 0.7%, and
+    the recovery has 182 floor-class elements against 172. Measured
+    independently of Tag, 99.92% of the other producer's standable surface is
+    reproduced within half a metre; 87 sq m of 103,935 is genuinely absent.
+
+    A count that cannot survive a change of producer is not a contract check.
+    """
+    counts = {name: len(_by_type(model, name)) for name in FLOOR_CLASS_TYPES}
+    tagged = set()
+    untagged = 0
+    for name in FLOOR_CLASS_TYPES:
+        for product in _by_type(model, name):
+            tag = getattr(product, "Tag", None)
+            if tag:
+                tagged.add(str(tag).strip())
+            else:
+                untagged += 1
+    storeys = len(_by_type(model, "IfcBuildingStorey"))
+    total = len(tagged) + untagged
+
+    detail = {**counts, "storeys": storeys,
+              "floor_class_elements": total, "distinct_tags": len(tagged),
+              "untagged_products": untagged}
+    headline = (f"{total} floor-class elements by Tag ("
+                + ", ".join(f"{n} {name[3:].lower()}" for name, n in counts.items())
+                + f" as products) across {storeys} storeys")
     consequence = ("Floor plates are the walkable surface and the door sill anchor. "
                    "A producer whose slab recovery is incomplete yields storeys the "
                    "reachability audit reports as unreachable because there is nothing "
