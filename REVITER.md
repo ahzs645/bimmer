@@ -685,14 +685,21 @@ is level 694 drawn three ways, and it agrees with the numbers without them: the
 tear is gone and in its place the corridors smear into tapered ribbons and the
 plates drag into wedges.
 
-**Kept anyway, off by default, for one question the plan cannot answer.** On the
-voxel side the seam tear is what `close_seam_walls` papers over with 1,147 cells
-of invented wall, and a plate STRETCHED across the seam is walkable where a
-plate torn at it is a canyon. Whether elasticity buys reachable interior is a
-different measurement from either of the two above, it needs the transform
-ported into `ifc_to_voxels.py`, and it is the only reason this code is here
-rather than deleted like the grid gate in §2i. `--band-metres` on
-`scripts/rectify-plan.ts` draws it.
+**Kept for one question the plan cannot answer — and the answer came back
+different.** On the voxel side the seam tear is what `close_seam_walls` papers
+over with invented wall, and a plate STRETCHED across a seam is walkable where a
+plate torn at it is a canyon. Ported into `ifc_to_voxels.py` as
+`--rectify-band` and measured on the same building at 1 m: the invented wall
+**halves, 1,056 cells to 567**, and interior cells that can see straight out go
+**792 (2.1%) to 633 (1.6%)** — the rectified build reaching the faithful
+build's leak rate for the first time, by not tearing rather than by walling.
+Against that, holes in the envelope double (508 to 1,018) and the interior
+inflates 4.2%, so reachable share and reachable count disagree about the sign.
+Not the default; see RECTIFY.md, "Or do not tear it".
+
+So the same transform is refuted for drawing a plan and pays for building a
+world. That is not a contradiction — a strained join is a broken join in a
+drawing, and a strained floor is still floor to a player.
 
 ## 3. Where a Reviter export stands today
 

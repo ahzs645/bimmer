@@ -444,6 +444,55 @@ the faithful build and 6,660 in the rectified one; the escape test caps 887 and
 ceiling lanterns underneath it — which is also why the "interior" denominator
 shrank. The comparison between the two builds is unchanged by the fix.
 
+### Or do not tear it: the seam as an elastic band
+
+`--rectify-band METRES` (`scripts/rectify_elastic.py`) replaces the step at the
+wing hull with a ramp. The rotation goes from full to none across a band
+straddling the boundary, each wing contributing its own displacement so the
+field is continuous everywhere and exact inside, and a plate spanning the
+boundary is STRETCHED across it instead of torn at it. There is no membership
+under a continuous field, so it uses neither the hull test, the contact claim,
+nor the per-triangle assignment — a field has nothing to cut at. Assemblies are
+the one exception and move rigidly by the weight at their centroid: a wall 6%
+longer is a wall, but a stair sheared 6% is a stair whose treads no longer meet
+its stringers, and the climb test reads treads.
+
+**On the parser's architectural plan this is refuted** — it breaks more joins
+than the rigid transform and costs the grid share rectification exists for
+(REVITER §2j). It was ported here anyway because walkability is a different
+question: a voxel grid does not care that a wall is 6% longer, it cares whether
+there is floor under the player. UNBC at 1 m, against the shipped rigid build:
+
+| | rigid | elastic, 5 m band |
+|---|---:|---:|
+| **cells of wall this pass had to invent** | **1,056** | **567** |
+| stitched seam corridors | 39 (344 cells) | 30 (246 cells) |
+| **interior cells that can see straight out** | **792 (2.1%)** | **633 (1.6%)** |
+| interior cells | 39,528 | 41,202 |
+| reachable | 37,662 (95.3%) | 39,129 (95.0%) |
+| cut off | 1,866 | 2,073 |
+| entrances | 2,145 | 2,191 |
+| holes in the envelope | **508** | **1,018** |
+
+**The mechanism does what it was built to do.** The tear this section is about
+is halved: 1,056 cells of invented wall down to 567, and nine fewer corridors
+to stitch. And the see-through leak — the residual this document has carried
+since rectification began, `--rectify` at 2.1% against the faithful build's
+1.6% — **reaches 1.6% for the first time.** Not by walling anything: by not
+tearing it in the first place.
+
+**Two things stop it being the default.** The envelope holes DOUBLE, 508 to
+1,018: stretching a plate away from the roof above it opens sky, and
+`cap_envelope` does not absorb it (it caps 693 against 663 and still ends with
+twice as many). And the interior grows 4.2%, from 39,528 cells to 41,202, so
+the reachable SHARE and the reachable COUNT disagree about the sign — 95.3% to
+95.0% against 37,662 to 39,129. An elastic transform inflates the building, so
+neither is evidence on its own; the defect counts above, which are not
+volumes, are.
+
+Worth more work, on the holes. Not worth switching the default until they are
+understood.
+
 ### What it costs, per wall
 
 The report used to be entirely the case *for* rectification. Three costs are
