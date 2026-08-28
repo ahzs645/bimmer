@@ -14,7 +14,7 @@ estimate.
 
 ## Why the current output has diagonal artifacts
 
-Measured from the IFC placements (14,902 walls):
+Measured from the IFC placements (7,521 walls):
 
 | plan angle (mod 90°) | walls | share |
 |---|---|---|
@@ -165,7 +165,7 @@ The UNBC IFC (`adb85a6f…`, the file every dated audit here was written
 against) through `preview_rectify.py`, in 34 seconds:
 
 ```
-14,902 walls, read from per-element placements; 9,684 axis-aligned (65%)
+7,521 walls, read from per-element placements; 4,881 axis-aligned (65%)
 6 wings: four at +32 deg, one at -58, one at -5      5,066 walls (34%) move
 ```
 
@@ -406,7 +406,7 @@ was patching the right thing. The parameter stays for the record and stays off.
 *Two things measured on the way past, neither fixed here.*
 `model.by_type("IfcWall")` already includes `IfcWallStandardCase`, so
 `by_type("IfcWall") + by_type("IfcWallStandardCase")` is **7,521 unique walls
-with 7,381 of them entered twice** — the 14,902 in every table above and below
+with 7,381 of them entered twice** — the 14,902 in the tables of this section
 is a double count. It does not move a hull (a duplicate is the same point), but
 it doubles `n`, doubles the thresholds the shares compute, and doubles
 `overlap()`, which halves the weight of the `0.4 x dist` shove penalty against
@@ -414,6 +414,26 @@ it: deduplicated, the same run gives the same six wings, rotations and pivots,
 but wing 5 takes a (−0.7, +0.7) shove instead of (0, +5) and its 1,232 walls
 land up to 4.4 m elsewhere. Fixing it changes the shipped build, so it wants
 its own measurement.
+
+**Fixed, and it was worth 370 stranded cells.** Deduplicated by id, the same
+six wings come back with the same rotations and the same pivots; the only
+change is wing 5's shove, `(0, +5)` to `(-1, +1)` m, because `overlap()` was
+scoring a doubled population against a fixed penalty. Rebuilt at 1 m against
+the shipped world:
+
+| | shipped (double-counted) | deduplicated |
+|---|---:|---:|
+| interior cells | 39,528 | 39,668 |
+| reachable | 37,662 (95.3%) | **38,172 (96.2%)** |
+| cut off | 1,866 | **1,496** |
+| holes in the envelope | 508 | 502 |
+| seeing straight out | 792 (2.1%) | 787 (2.1%) |
+
++510 reachable cells and 370 fewer stranded, at no measured cost anywhere
+else. A census error reached the geometry through a threshold, which is the
+general shape worth remembering: `by_type` returns SUBTYPES, so concatenating
+a type with its own subtype counts the subtype twice, and the count then
+travels wherever a share or a penalty reads it.
 
 ### And the canyon the cut leaves
 

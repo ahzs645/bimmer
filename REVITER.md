@@ -365,7 +365,7 @@ footprints out of the tessellation (§1). Run on both:
 
 | | Autodesk export | Reviter recovery |
 |---|---|---|
-| walls read | 14,902, from placements | 7,462, from tessellation |
+| walls read | 7,521, from placements | 7,462, from tessellation |
 | axis-aligned | 65% | 64% |
 | wings found | **6**: four +32, one -58, one -5 | **6**: four +32, one -58, one -5 |
 | knocked off the grid | 523 | 214 |

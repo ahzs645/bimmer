@@ -107,7 +107,16 @@ def wall_plan(model, min_axis_ratio=1.2, include_facade=False):
     from ifcopenshell.util import placement as _placement
 
     scale = ifcopenshell.util.unit.calculate_unit_scale(model)
-    walls = model.by_type("IfcWall") + model.by_type("IfcWallStandardCase")
+    # Deduplicated by id, and that is not defensive coding. `IfcWallStandardCase`
+    # is a SUBTYPE of `IfcWall`, and `by_type` returns subtypes, so the obvious
+    # concatenation counts every standard-case wall twice -- on this building
+    # 7,381 of 7,521, reported for weeks as "14,902 walls". It does not move a
+    # hull, because a duplicated point is already in the hull of itself. It does
+    # double `n`, hence the share-derived family and wing thresholds, hence
+    # `overlap()` against a FIXED shove penalty -- which is how a double count
+    # in a census reaches the geometry.
+    walls = list({wall.id(): wall for wall in
+                  model.by_type("IfcWall") + model.by_type("IfcWallStandardCase")}.values())
     facade = []
     if include_facade:
         for kind in FACADE_TYPES:
