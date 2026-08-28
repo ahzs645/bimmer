@@ -56,6 +56,11 @@ import trimesh
 from rectify import (WING_HULL_MARGIN_M, adjacency_claims, apply_wing,
                      apply_wings_piecewise, compute_wing_transforms, wing_for_point,
                      wing_records)
+# The same wings applied as a continuous field rather than a step at the hull.
+# Its own module because it shares only the wing records with the rigid path --
+# no hull test, no contact claim, no per-triangle assignment -- and because it
+# is off by default and measured, not assumed. See its docstring.
+from rectify_elastic import apply_wing_partial, apply_wings_elastic, blend_at_point
 
 # IFC element type -> coarse semantic class
 SEMANTIC_CLASSES = {
@@ -147,7 +152,8 @@ def stair_shape(stair) -> str | None:
     return getattr(stair, "ShapeType", None) or getattr(stair, "PredefinedType", None)
 
 
-def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
+def extract(model, threads: int, spiral_mode: str = "synth", wings=None,
+            rectify_band_m: float = 0.0):
     """Iterate geometry once.
 
     Returns (solid meshes by class, door meshes, spiral assemblies, stats).
@@ -215,10 +221,18 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
     # the wing's facade without being a wall -- curtain panels and mullions,
     # measured at 68% of everything the move leaves behind. Claim those by
     # CONTACT, once, before anything is transformed.
-    claimed = adjacency_claims([(i, v) for i, v, _ in drained], wings) if wings else {}
+    #
+    # Under an elastic band there is no membership to claim past: every vertex
+    # carries its own weight, so the claim is skipped along with the hull test.
+    claimed = ({} if rectify_band_m else
+               adjacency_claims([(i, v) for i, v, _ in drained], wings)) if wings else {}
     if claimed:
         print(f"Rectify: {len(claimed)} element(s) claimed by contact with a wing "
               f"the hull did not reach", flush=True)
+    if wings and rectify_band_m:
+        print(f"Rectify: ELASTIC, {rectify_band_m} m band -- the wing rotation ramps "
+              f"to zero across the hull boundary instead of stepping at it. Plates "
+              f"spanning a seam stretch rather than tear; see RECTIFY.md.", flush=True)
 
     for shape_id, v, f in drained:
         element = model.by_id(shape_id)
@@ -237,9 +251,17 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
                 root = dec[0].RelatingObject.id()
                 if root not in wing_cache:
                     cx, cy = v[:, 0].mean(), v[:, 1].mean()
-                    wing_cache[root] = wing_for_point(wings, cx, cy)
-                if wing_cache[root] is not None:
-                    v = apply_wing(wing_cache[root], v)
+                    wing_cache[root] = (blend_at_point(wings, cx, cy, rectify_band_m)
+                                        if rectify_band_m
+                                        else (wing_for_point(wings, cx, cy), 1.0))
+                wing, weight = wing_cache[root]
+                if wing is not None:
+                    # Rigidly either way. A wall 6% longer than it was is a
+                    # wall; a stair sheared by 6% is a stair whose treads no
+                    # longer meet its stringers, and the climb test reads
+                    # treads. An assembly deforms as a body or not at all.
+                    v = apply_wing_partial(wing, weight, v) if rectify_band_m \
+                        else apply_wing(wing, v)
             elif shape_id in claimed:
                 # Joined to a wing the hull did not reach. It moves whole:
                 # cutting a mullion at a hull edge it is entirely outside of
@@ -252,7 +274,14 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
                 # degrees away -- measured at 90-99% of walls rotating against
                 # 25-78% of plates, and it is why a rectified build had
                 # storeys of bare plate with nothing in the column at all.
-                v, f = apply_wings_piecewise(wings, v, f)
+                #
+                # Elastic instead assigns per VERTEX, which needs no
+                # subdivision and no assignment at all: a continuous field has
+                # nothing to cut at.
+                if rectify_band_m:
+                    v = apply_wings_elastic(wings, v, rectify_band_m)
+                else:
+                    v, f = apply_wings_piecewise(wings, v, f)
 
         if ifc_type in EXCLUDE_TYPES:
             excluded_counts[ifc_type] += 1
@@ -2448,6 +2477,15 @@ def main() -> None:
                          "grid about their seam with the main building, so "
                          "their walls/corridors voxelize clean instead of "
                          "jagged (see RECTIFY.md)")
+    ap.add_argument("--rectify-band", type=float, default=0.0, metavar="METRES",
+                    help="EXPERIMENTAL, off by default. Apply --rectify as a "
+                         "continuous field instead of a step at the wing hull: "
+                         "the rotation ramps to zero across a band this wide, "
+                         "so a plate spanning a seam stretches rather than "
+                         "tears. Measured WORSE than the rigid transform for "
+                         "drawings (REVITER.md 2j); kept because a stretched "
+                         "plate may still be walkable where a torn one is a "
+                         "canyon. Implies --rectify")
     ap.add_argument("--floor-slabs", action="store_true",
                     help="convert thin single-voxel floor plates to bottom slabs (default: full cubes)")
     ap.add_argument("--fill", action="store_true",
@@ -2475,6 +2513,8 @@ def main() -> None:
     model = ifcopenshell.open(str(ifc_path))
     print(f"Extracting geometry with {args.threads} threads ...", flush=True)
     wings = None
+    if args.rectify_band and not args.rectify:
+        args.rectify = True                     # a band with nothing to bend is a no-op
     if args.rectify:
         wings = compute_wing_transforms(model)
         for w in wings:
@@ -2483,7 +2523,8 @@ def main() -> None:
             print(f"Rectify: wing of {w['n']} walls rotates {w['deg']:+.0f} deg "
                   f"about seam ({w['pivot'][0]:.0f}, {w['pivot'][1]:.0f}) m{shove}", flush=True)
     meshes, door_verts, spirals, stair_groups, ex_stats = extract(
-        model, args.threads, args.spiral, wings=wings)
+        model, args.threads, args.spiral, wings=wings,
+        rectify_band_m=args.rectify_band)
     print("Solid faces by class:", ex_stats["solid_faces_by_class"], flush=True)
     print(f"Door elements: {ex_stats['door_elements']}", flush=True)
 
