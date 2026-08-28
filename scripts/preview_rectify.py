@@ -317,6 +317,10 @@ def main() -> int:
     ap.add_argument("--no-svg", action="store_true", help="report only")
     ap.add_argument("--self-test", action="store_true",
                     help="check the preview against a synthetic two-grid building")
+    ap.add_argument("--include-facade", action="store_true",
+                    help="build the wing hulls from the curtain wall's IfcPlate/IfcMember "
+                         "parts as well as from walls (measured in RECTIFY.md; off by "
+                         "default, and the report says why)")
     args = ap.parse_args()
 
     if args.self_test:
@@ -340,7 +344,7 @@ def main() -> int:
         args.model = ifc
 
     model = ifcopenshell.open(str(args.model))
-    points, angles, source = wall_plan(model)
+    points, angles, source = wall_plan(model, include_facade=args.include_facade)
     if not len(points):
         raise SystemExit(f"{args.model.name} has no readable walls; "
                          "nothing to rectify and nothing to preview.")
@@ -353,10 +357,11 @@ def main() -> int:
     where = {"placements": "per-element placements",
              "tessellation": "wall footprints (the file shares one placement)"}[source]
     on_axis = on_grid(angles)
-    print(f"{len(points):,} walls, read from {where}; {on_axis.sum():,} axis-aligned "
+    population = "walls + curtain wall parts" if args.include_facade else "walls"
+    print(f"{len(points):,} {population}, read from {where}; {on_axis.sum():,} axis-aligned "
           f"({on_axis.mean():.0%}), {(~on_axis).sum():,} off-grid")
 
-    wings = compute_wing_transforms(model)
+    wings = compute_wing_transforms(model, include_facade=args.include_facade)
     if not wings:
         print("\nNo rectifiable wing found: no off-axis angle family is large and "
               "contiguous enough. --rectify would be a no-op on this model.")
@@ -408,6 +413,7 @@ def main() -> int:
             "input": str(args.model),
             "walls": int(len(points)),
             "axis_aligned": int(on_axis.sum()),
+            "include_facade": bool(args.include_facade),
             "hull_margin_m": WING_HULL_MARGIN_M,
             # The same records --rectify writes into summary.json, so a preview
             # and a real build can be compared field by field.

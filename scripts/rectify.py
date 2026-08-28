@@ -59,7 +59,17 @@ def _principal_angle(plan):
     return math.degrees(math.atan2(axis[1], axis[0])), ratio
 
 
-def wall_plan(model, min_axis_ratio=1.2):
+# The curtain wall's parts, which are not walls. `IfcCurtainWall` itself is NOT
+# in this list: measured on the UNBC export, all 1,835 of them carry their own
+# `IfcLocalPlacement` entity that resolves to the IDENTITY matrix and no
+# `Representation` at all -- they are aggregate containers. Reading them would
+# add 1,835 phantom walls stacked on the world origin, every one of them
+# reading as perfectly axis-aligned, and neither route in this function can
+# recover a position the file does not carry.
+FACADE_TYPES = ("IfcPlate", "IfcMember")
+
+
+def wall_plan(model, min_axis_ratio=1.2, include_facade=False):
     """Every wall's plan position and true angle, however the file carries them.
 
     Two producers write the same building in incompatible ways, and reading
@@ -76,20 +86,50 @@ def wall_plan(model, min_axis_ratio=1.2):
 
     So the placements are used only when they actually distinguish the walls,
     and the footprint is read otherwise. Returns `(points_m, degrees, source)`.
+
+    `include_facade` widens the population to the curtain wall's own elements
+    (`FACADE_TYPES`), which are not walls and are therefore invisible to the
+    element list every wing hull is built from. It is OFF by default because
+    it was measured and did not pay: on UNBC it adds 16,396 usable parts to
+    the 14,902 walls and moves four of the six wings, and the hull it widens
+    was not the thing that was missing the glazing. The numbers are in
+    RECTIFY.md, "Building the hull from the facade too".
+
+    A facade part is only usable when its placement states a plan DIRECTION.
+    Measured on the same export, 9,546 of 19,707 `IfcMember` mullions carry a
+    placement whose local X axis is vertical -- they run up the facade, not
+    along it -- so `atan2(m[1][0], m[0][0])` is `atan2(0, 0)` and every one of
+    them reads as EXACTLY 0 degrees. Kept, they are 9,546 elements asserting
+    that the building is axis-aligned where it is not, and they land in the
+    collision target every wing's pivot and rotation are scored against. They
+    are dropped, and counted out loud.
     """
     from ifcopenshell.util import placement as _placement
 
     scale = ifcopenshell.util.unit.calculate_unit_scale(model)
     walls = model.by_type("IfcWall") + model.by_type("IfcWallStandardCase")
+    facade = []
+    if include_facade:
+        for kind in FACADE_TYPES:
+            facade.extend(model.by_type(kind))
 
-    matrices, kept = [], []
-    for wall in walls:
+    matrices, kept, undirected = [], [], 0
+    for element, is_facade in ([(w, False) for w in walls] + [(f, True) for f in facade]):
         try:
-            matrices.append(np.asarray(_placement.get_local_placement(wall.ObjectPlacement),
-                                       dtype=float))
-            kept.append(wall)
+            matrix = np.asarray(_placement.get_local_placement(element.ObjectPlacement),
+                                dtype=float)
         except Exception:
             continue
+        # A part whose local X axis is vertical has no plan direction to read.
+        # atan2(0, 0) is 0.0, which is indistinguishable from "on the grid".
+        if is_facade and math.hypot(matrix[0][0], matrix[1][0]) < 1e-6:
+            undirected += 1
+            continue
+        matrices.append(matrix)
+        kept.append(element)
+    if undirected:
+        print(f"  (wall plan: {undirected} facade parts carry no plan direction "
+              "-- placement local X is vertical -- and were left out)", flush=True)
     if not kept:
         return np.empty((0, 2)), np.empty(0), "none"
 
@@ -150,7 +190,8 @@ FAMILY_SHARE, FAMILY_FLOOR = 0.017, 6
 WING_SHARE, WING_FLOOR = 0.004, 4
 
 
-def compute_wing_transforms(model, min_family=None, eps=9.0, min_wing=None):
+def compute_wing_transforms(model, min_family=None, eps=9.0, min_wing=None,
+                            include_facade=False):
     """Phase-1 plan rectification: find off-grid WINGS and how to square them.
 
     Buildings like UNBC are several orthogonal grids in one model: 65 % of
@@ -174,7 +215,7 @@ def compute_wing_transforms(model, min_family=None, eps=9.0, min_wing=None):
     """
     from scipy.spatial import ConvexHull, cKDTree
 
-    P, true_angles, source = wall_plan(model)
+    P, true_angles, source = wall_plan(model, include_facade=include_facade)
     if not len(P):
         return []
     if min_family is None:

@@ -293,6 +293,128 @@ moves the boundary again. The model carries no wing structure to use instead
 wing has to be inferred, and an inferred boundary breaks joins somewhere by
 construction. `docs/confirm_contact_claim.png` is that distribution.
 
+### Building the hull from the facade too, and why it does not pay
+
+The section above invites an obvious fix: if the hull misses the glazing
+because `IfcPlate` and `IfcMember` are not `IfcWall`, put them in the
+population `wall_plan` reads and let the hull be drawn around the facade as
+well. That was never tested; `adjacency_claims` patched the symptom
+downstream instead. It is implemented now, off by default, as
+`wall_plan(include_facade=True)` / `compute_wing_transforms(include_facade=True)`
+and `preview_rectify.py --include-facade`, and both ways were measured on the
+Autodesk export (`/tmp/unbc.ifc`, the file the shipped wings come from).
+
+**The population being added.**
+
+| | count | does the placement distinguish it? |
+|---|---:|---|
+| `IfcWall` + `IfcWallStandardCase` (what the hull reads today) | 14,902 | yes — 6,522 distinct plan positions |
+| `IfcCurtainWall` | 1,835 | **no** — 1,835 separate `IfcLocalPlacement` entities, every one resolving to the IDENTITY matrix, and no `Representation` at all |
+| `IfcPlate` | 6,235 | yes — 2,651 distinct plan positions |
+| `IfcMember` | 19,707 | position yes; **direction for only 10,161** |
+
+Both "no" rows are this file's docstring warning in a new guise, and neither is
+visible in an angle histogram. The 1,835 curtain walls are aggregate containers
+— read, they would be 1,835 phantom walls stacked on the world origin, every
+one of them reading as perfectly axis-aligned. And 9,546 of the 19,707 mullions
+carry a placement whose local X axis is VERTICAL, because a mullion runs up the
+facade rather than along it: `atan2(m[1][0], m[0][0])` is `atan2(0, 0)`, which
+is `0.0`, which is indistinguishable from on the grid. So `FACADE_TYPES` is
+plates and members only, and a part with no plan direction is dropped and
+counted out loud. 14,902 walls + **16,396** usable facade parts = 31,298.
+
+**What it does to the wings.** Every rotation survives; four of the six wings
+land somewhere else.
+
+| wing | baseline | with the facade in the hull |
+|---|---|---|
+| 1 | +32° at (5.7, −9.9), shove (−2, −2), 190 walls | identical, 198 walls |
+| 2 | +32° at (22.7, 84.9), shove (+3, −3), 2,297 walls | +32° at (22.7, 84.9), shove (+4, −4) — its walls land **1.0 m** away |
+| 3 | +32° at (−27.4, 112.0), shove (−4, −4), 501 walls | +32° at (−26.3, 93.4), shove (−5, 0) — pivot moves 18.6 m, its walls land **11.1 m** away |
+| 4 | −58° at (−66.2, −18.4), no shove, 366 walls | identical, 366 walls |
+| 5 | +32° at (19.1, 231.2), shove (0, +5), 1,232 walls | +32° at (27.0, 229.8), shove (−4, +4) — pivot moves 8.0 m, its walls land **6.6 m** away |
+| 6 | −5° at (96.6, 148.3), shove (0, +4), 480 walls | −5° at (91.2, 154.2), shove (0, +5) — pivot moves 8.0 m, walls land 0.8 m away |
+| **7** | — | **new**: +32° at (27.1, 142.0), 91 walls and 460 facade parts, hull **49 m²**, footprint 15.6 × 6.9 m |
+
+The wall counts are walls ENCLOSED BY THE HULL, which is the only figure that
+compares across the two runs; the preview prints the cluster's own member count
+instead (96, 1,974, 224, 337, 1,181, 339 baseline), and under the widening that
+number counts facade parts too.
+
+4,030 of the 5,066 walls that move in both runs land more than a metre from
+where the shipped build puts them. That is the facade's doing and not
+tie-break noise: re-running the baseline with its 14,902 rows **shuffled**
+(three seeds) reproduces all six wings, all six rotations, all six pivots and
+shoves, and every wall to within 0.00 m.
+
+The seventh wing is not a wing. Its 91 walls sit at 36 distinct plan positions
+— one small room's worth, repeated up the storeys — inside a 15.6 × 6.9 m
+footprint, and in the baseline they belong to no wing at all. It exists because
+460 facade parts pushed a cluster over the wing floor, and it rotates 45
+already-on-grid walls off the grid.
+
+**What it costs**, both columns measured on the SAME 14,902 walls (the preview
+prints its cost lines over whatever population it read, so a widened run's
+1,557 "knocked off the grid" counts facade parts too and is not comparable):
+
+| | baseline | widened |
+|---|---:|---:|
+| walls that move | 5,066 | 5,386 |
+| already on the grid, rotated OFF it | **523** | 710 |
+| clashing after the move | 104 | **74** |
+| seams pulled open | **89** | 151 |
+| facade parts inside some wing hull | 9,632 | **10,619** |
+
+**And the reason it does not pay.** The premise is true of the element list and
+false of the hull. A wing's glazing hangs on that wing's envelope, and the
+convex hull of the wing's own wall placements (plus `WING_HULL_MARGIN_M`)
+already contains it:
+
+| facade parts within *r* of a wall that moves | *r* = 1 m | 1.5 m | 3 m |
+|---|---:|---:|---:|
+| baseline: inside a hull already | 4,405 / 4,454 (99%) | 6,590 / 6,694 (**98%**) | 8,654 / 8,998 (96%) |
+| baseline: left outside every hull | 49 | 104 | 344 |
+| widened: left outside every hull | 83 | **156** | 506 |
+
+The widening claims 987 more facade parts and loses none — but 921 of those 987
+are wing 3 growing (the wing whose pivot moves 18.6 m) and the 15.6 × 6.9 m
+seventh wing. The other four wings gain **66 parts between them**. Against the
+population the idea exists for — glazing standing next to a wall that moves and
+not claimed by the hull — it goes the wrong way: 104 such parts become 156.
+The boundary does not go away, it moves, which is the same thing the contact
+claim's own distribution says.
+
+Two ablations, both worse. **Pinning the thresholds** to the baseline's
+absolute values (`min_family=253`, `min_wing=60`, since the shares are read off
+a population that has doubled) finds nine wings, knocks 780 walls off the grid,
+leaves 192 clashing, flips wing 3 from +32° to −58°, and puts **306 walls
+inside two hulls at once** where every earlier measurement found the hulls
+disjoint. **Keeping the undirected mullions** — the naive widening, and the one
+anybody would write first — is worse still: the big east wing flips +32° → −58°
+and its pivot moves 59 m, wing 4's pivot moves 35 m, and the −5° wing is
+squared by **+85°** instead. 9,546 elements asserting that the building is
+axis-aligned land in the collision target every pivot and rotation is scored
+against.
+
+**Verdict: refuted.** Widening the hull is a regression on this model. It costs
+187 more on-grid walls knocked off the grid and 62 more opened seams, relocates
+four of six wings by up to 11 m, invents a room-sized seventh, and buys 66
+extra facade parts on the four wings it leaves alone — because 98% of the
+glazing next to a moving wall was already inside the hull. `adjacency_claims`
+was patching the right thing. The parameter stays for the record and stays off.
+
+*Two things measured on the way past, neither fixed here.*
+`model.by_type("IfcWall")` already includes `IfcWallStandardCase`, so
+`by_type("IfcWall") + by_type("IfcWallStandardCase")` is **7,521 unique walls
+with 7,381 of them entered twice** — the 14,902 in every table above and below
+is a double count. It does not move a hull (a duplicate is the same point), but
+it doubles `n`, doubles the thresholds the shares compute, and doubles
+`overlap()`, which halves the weight of the `0.4 x dist` shove penalty against
+it: deduplicated, the same run gives the same six wings, rotations and pivots,
+but wing 5 takes a (−0.7, +0.7) shove instead of (0, +5) and its 1,232 walls
+land up to 4.4 m elsewhere. Fixing it changes the shipped build, so it wants
+its own measurement.
+
 ### And the canyon the cut leaves
 
 A clean cut does not close the gap — the gap is the point, because the wing
