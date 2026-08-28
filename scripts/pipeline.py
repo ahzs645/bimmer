@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""End-to-end IFC -> Minecraft pipeline driver.
+"""End-to-end RVT/IFC -> Minecraft pipeline driver.
 
 Runs every stage in order and writes a manifest:
 
+  RVT --(rvt_to_ifc)--> IFC          (only when the input is a .rvt)
   IFC --(ifc_to_voxels)--> out/<name>/blocks.csv
       --(blocks_to_minecraft)--> out/<name>/<name>.schem [+ .litematic]
       --(export_web)--> web/data/<name>/{voxels.bin,meta.json}
@@ -11,8 +12,14 @@ Runs every stage in order and writes a manifest:
 Everything it produces is reproducible from the IFC, so the out/ and web/data/
 trees are git-ignored; this script is the source of truth for regenerating them.
 
+Hand it a `.rvt` and stage 0 runs first: the Reviter parser in
+`parsers/reviter` recovers an IFC, which is then graded against what the voxel
+engine reads before any of it is converted (see REVITER.md). Hand it an `.ifc`
+and nothing changes -- that path is untouched.
+
 Example:
   .venv/bin/python scripts/pipeline.py "UNBC Model ... .ifc" --pitch 1.0 --name unbc_1m
+  .venv/bin/python scripts/pipeline.py "UNBC Model ... .rvt" --pitch 1.0 --name unbc_1m
 """
 
 from __future__ import annotations
@@ -31,7 +38,13 @@ SCRIPTS = ROOT / "scripts"
 def run(label: str, cmd: list[str]) -> None:
     print(f"\n=== {label} ===", flush=True)
     print("  " + " ".join(repr(c) if " " in c else c for c in cmd), flush=True)
-    subprocess.run(cmd, check=True)
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        # Each stage diagnoses its own failure on the way out. A traceback from
+        # this driver on top of that buries the message that actually explains
+        # what went wrong, so fail with the stage name and nothing else.
+        raise SystemExit(f"\npipeline: stage '{label}' failed (exit {result.returncode}); "
+                         "its error is above.")
 
 
 def refresh_datasets(web_dir: Path) -> list[dict]:
@@ -51,7 +64,7 @@ def refresh_datasets(web_dir: Path) -> list[dict]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("ifc", type=Path)
+    ap.add_argument("model", type=Path, help=".ifc, or .rvt to parse first")
     ap.add_argument("--pitch", type=float, default=1.0, help="voxel size in metres")
     ap.add_argument("--name", required=True, help="dataset name, e.g. unbc_1m")
     ap.add_argument("--label", default=None, help="human label for the viewer dropdown")
@@ -60,12 +73,29 @@ def main() -> None:
                     choices=["schem", "litematic"])
     ap.add_argument("--no-web", action="store_true", help="skip web viewer export")
     ap.add_argument("--no-preview", action="store_true", help="skip PNG previews")
+    ap.add_argument("--allow-contract-failures", action="store_true",
+                    help="convert a parsed IFC that fails the contract gate anyway")
     args = ap.parse_args()
 
-    ifc = args.ifc.expanduser().resolve()
-    if not ifc.exists():
-        raise SystemExit(f"IFC not found: {ifc}")
+    source = args.model.expanduser().resolve()
+    if not source.exists():
+        raise SystemExit(f"model not found: {source}")
     out_dir = ROOT / "out" / args.name
+
+    # 0. RVT -> IFC, when we were handed the proprietary format. The parsed IFC
+    #    lands beside the voxel output rather than beside the source model, so a
+    #    read-only model directory works and each dataset keeps its own IFC and
+    #    the provenance sidecar naming the parser commit that produced it.
+    if source.suffix.lower() == ".rvt":
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ifc = out_dir / f"{source.stem}.ifc"
+        cmd = [PY, str(SCRIPTS / "rvt_to_ifc.py"), str(source), "--out", str(ifc),
+               "--pitch", str(args.pitch)]
+        if args.allow_contract_failures:
+            cmd.append("--allow-contract-failures")
+        run("0/4 RVT -> IFC", cmd)
+    else:
+        ifc = source
     blocks = out_dir / "blocks.csv"
     label = args.label or f"{args.name} ({args.pitch} m)"
 
