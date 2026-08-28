@@ -407,6 +407,18 @@ level is 87–98%.
   a seam is walkable where a torn one is a canyon, so it may still buy
   reachable interior. That needs the transform ported into
   `ifc_to_voxels.py` and is the next thing to try.
+- **Each wall was counted twice.** `by_type` returns subtypes, so
+  `by_type("IfcWall") + by_type("IfcWallStandardCase")` doubled 7,381 of
+  7,521 walls — the "14,902" in every document here. It moved no hull
+  directly; it doubled `n`, the share-derived thresholds, and `overlap()`
+  against a fixed shove penalty. Fixed and rebuilt: reachable 95.3% →
+  **96.2%**, cut off 1,866 → **1,496**, nothing measurably worse.
+- **The floor-plate gap was never real.** "94 slabs against 107" was a
+  count of `IfcSlab` entities, which no two producers write the same way.
+  Joined on `Tag` across the floor classes the recovery has 182 elements
+  against Autodesk's 172, Revit Floors are 68/68, and 99.92% of standable
+  surface is reproduced within half a metre. REVITER §3 severity high →
+  closed.
 - **An A/B whose halves came from different inputs.** The first
   contact-claim table paired a `--no-contact` run against a run with
   the flag on — and different `wings.json` files, one computed from the
