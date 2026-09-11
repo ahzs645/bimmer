@@ -64,6 +64,27 @@ GLASS_PALETTE: dict[str, tuple[int, int, int]] = {
 
 GLASS_BLOCKS = set(GLASS_PALETTE)
 
+# --- blocks the engine emits, but that must never be a colour MATCH target ---
+# `nearest_block` picks a block to represent an IFC material's colour, and a
+# door, a fence or a stair is chosen for what it DOES, not for its colour --
+# putting them in the matching palette would let a beige wall convert to a
+# staircase. They still need a colour to be drawn with, and without one
+# `rgb_for_block` returned its unmatched sentinel, so every lantern and railing
+# in a walkthrough rendered the same wrong pink.
+EXTRA_COLOURS: dict[str, tuple[int, int, int]] = {
+    "minecraft:oak_door": (162, 130, 78),
+    "minecraft:oak_fence": (162, 130, 78),
+    "minecraft:sea_lantern": (172, 199, 190),
+    "minecraft:smooth_stone_slab": (159, 159, 159),
+    "minecraft:stone_brick_stairs": (122, 122, 122),
+    "minecraft:grass_block": (127, 156, 84),
+    "minecraft:dirt": (134, 96, 67),
+}
+
+# Blocks that emit light: drawn at full brightness rather than face-shaded,
+# because a lantern lit like a ceiling reads as a stain on the ceiling.
+EMISSIVE = {"minecraft:sea_lantern", "minecraft:glowstone", "minecraft:shroomlight"}
+
 
 def _srgb_to_lab(rgb: tuple[float, float, float]) -> tuple[float, float, float]:
     """sRGB (0-255) -> CIE L*a*b* (D65)."""
@@ -102,7 +123,9 @@ def nearest_block(rgb: tuple[int, int, int], glass: bool = False) -> str:
 
 
 def rgb_for_block(block: str) -> tuple[int, int, int]:
-    return OPAQUE_PALETTE.get(block) or GLASS_PALETTE.get(block) or (190, 120, 120)
+    """A block's display colour. Not the same question as `nearest_block`."""
+    return (OPAQUE_PALETTE.get(block) or GLASS_PALETTE.get(block)
+            or EXTRA_COLOURS.get(block) or (190, 120, 120))
 
 
 def is_glass(block: str) -> bool:

@@ -8,16 +8,31 @@ Built and tested end-to-end on the **UNBC campus model** (Revit → IFC2X3, 80 M
 ~41k elements, 13 storeys, ~218 × 375 × 19 m).
 
 ```
-RVT ──Revit/APS──▶ IFC ──pipeline──▶ .schem / .litematic ──WorldEdit/FAWE──▶ Minecraft
-                                  └──▶ interactive web viewer
+RVT ──parsers/reviter──▶ IFC ──pipeline──▶ .schem / .litematic ──WorldEdit/FAWE──▶ Minecraft
+     (or Revit/APS)                     └──▶ interactive web viewer
+      the parser            the interpreter
 ```
+
+The front half is [**Reviter**](https://github.com/ahzs645/reviter), a
+clean-room RVT decoder pinned here as a git submodule, so the whole chain runs
+without a Revit licence. The two halves meet at a **file-level contract** rather
+than at code — see [REVITER.md](REVITER.md).
 
 ## Quick start
 
 ```sh
+git clone --recurse-submodules https://github.com/ahzs645/bimmer
 make setup          # .venv (Python 3.11) + dependencies   (run once)
 make p1             # full pipeline at 1 m/block   -> out/unbc_1m/*.schem
 make viewer         # interactive viewer at http://127.0.0.1:8765/
+```
+
+Starting from the `.rvt` instead of an IFC (no Revit needed):
+
+```sh
+make parser-setup   # check out parsers/reviter + install its deps (run once)
+make parser-check   # preflight, needs no model
+make rvt RVT="UNBC Model ... .rvt"
 ```
 
 That's it. See **[PIPELINE.md](PIPELINE.md)** for how it works, the block-mapping
@@ -27,16 +42,26 @@ table, functional doors, per-stage reference, and Minecraft import instructions.
 
 | Path | What |
 |---|---|
-| `scripts/pipeline.py` | one-command end-to-end driver |
+| `parsers/reviter` | **the parser** — Reviter, a clean-room RVT decoder, as a pinned submodule |
+| `scripts/rvt_to_ifc.py` | stage 0: RVT → IFC through the parser, gated by the contract check |
+| `scripts/pipeline.py` | one-command end-to-end driver (accepts `.rvt` or `.ifc`) |
 | `scripts/ifc_to_voxels.py` | the engine: IFC → voxels (semantic + functional doors) |
 | `scripts/blocks_to_minecraft.py` | voxels → `.schem` / `.litematic` (block-state aware) |
 | `scripts/export_web.py`, `web/` | interactive Three.js viewer |
 | `scripts/render_voxels.py` | static iso / plan / elevation PNG previews |
 | `scripts/inspect_ifc.py` | fast structural probe of an IFC |
+| `scripts/check_ifc_contract.py` | does this IFC carry what the engine reads? (gate a model before converting it) |
+| `scripts/rectify.py` | Phase-1 plan rectification: which wings sit off the grid, and the rigid motion that squares each one |
+| `scripts/preview_rectify.py` | see that rectification as a before/after plan, from wall placements alone (seconds, no conversion) |
+| `scripts/walk_physics.py` | the vanilla-Minecraft movement model, shared by everything that walks a world |
+| `scripts/walk_voxels.py` | **walk the converted world** and render what a player sees — frames, a GIF, and the route |
+| `scripts/inspect_interior.py` | sweep the whole interior: where it is cut off, where the envelope leaks, whether stairs bend |
+| `scripts/make_fixture_building.py` | a small IFC test building with an off-grid wing, so the pipeline is testable without the 67 MB model |
 | `renderers/mcweb/` | export the building to a Java world save for the **minecraft-web-client** renderer (real doors/stairs/slabs/fences) |
 | `Makefile` | `setup` / `p1` / `p05` / `all` / `viewer` / `clean` |
 | **[HANDOFF.md](HANDOFF.md)** | **start here to continue this work**: current audited state, known residuals, ranked backlog, and the traps that already bit us |
 | **[PIPELINE.md](PIPELINE.md)** | full design + usage docs |
+| **[REVITER.md](REVITER.md)** | RVT → voxels **without Revit**: the frame-by-frame transformation chain, the engine's IFC input contract, and what a native RVT recovery supplies today |
 | **[BLOCKCRAFT.md](BLOCKCRAFT.md)** | walk the building in a browser (BlockCraft, flat world) |
 | **[RENDERERS.md](RENDERERS.md)** | the two walkable browser renderers compared (BlockCraft vs minecraft-web-client) |
 | **[LESSONS.md](LESSONS.md)** | failure catalog (doors/stairs/railings): symptom → root cause → fix, the verification workflow, player behaviour, open items |
@@ -64,14 +89,33 @@ npm run dev        # or: pnpm dev
 
 ## Step 0: getting an IFC from the RVT
 
-RVT is Autodesk's proprietary format; open-source tooling can't read it directly.
-Export it to IFC first (then this pipeline takes over):
+RVT is Autodesk's proprietary format; open-source tooling can't read it directly,
+so something has to produce an IFC before this pipeline takes over.
+
+**The built-in route** is [Reviter](https://github.com/ahzs645/reviter), pinned
+as a submodule at `parsers/reviter` — a clean-room RVT decoder that reads the
+model natively and writes IFC4, no licence involved. It is built on the same
+UNBC sources as this repository. `make rvt` runs it and hands the result to the
+pipeline; `scripts/pipeline.py` also takes a `.rvt` directly.
+
+Other routes, all of which produce an IFC this pipeline reads the same way:
 
 - **Revit desktop** — open the RVT, make a clean 3-D view, *Export → IFC*
   (IFC2x3 Coordination View is fine). Best option if you have Revit.
 - **Autodesk Platform Services** — Model Derivative / Design Automation can
   export IFC in the cloud (needs APS credentials).
 - **ODA / commercial converters** — can read RVT without Revit.
+
+Whichever you use, grade the result before converting it — the engine reads IFC
+*semantics*, and a file missing them converts without error into a subtly
+unwalkable world:
+
+```sh
+make contract IFC="model.ifc"      # or: python3 scripts/check_ifc_contract.py model.ifc
+```
+
+**[REVITER.md](REVITER.md)** has the frame-by-frame transformation chain, the
+full input contract, and how the parser/interpreter split is wired.
 
 IFC is the right interchange format here because it preserves *what each element
 is* (wall vs. glazing vs. door vs. slab) — which is exactly what drives the

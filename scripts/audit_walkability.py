@@ -17,71 +17,27 @@ source); drops to -3 are allowed; every stand cell needs support below and
 
 Usage:  audit_walkability.py [path/to/blocks.csv]
 """
-import csv
 import sys
 from collections import defaultdict, deque
+from pathlib import Path
 
 PATH = sys.argv[1] if len(sys.argv) > 1 else "out/unbc_1m/blocks.csv"
-STAIR_BASES = ("minecraft:stone_bricks", "minecraft:stone_brick_stairs")
 
-solid = {}
-stair_cells = set()
-with open(PATH) as f:
-    r = csv.reader(f)
-    next(r)
-    for x, y, z, b in r:
-        p = (int(x), int(y), int(z))
-        solid[p] = b
-        if b.split("[")[0] in STAIR_BASES:
-            stair_cells.add(p)
+# The movement model lives in walk_physics so that anything else which walks
+# this world -- the first-person walkthrough, most immediately -- moves by the
+# same rules this audit scores by. A second copy would agree until it mattered.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from walk_physics import DIRS, STAIR_BASES, World  # noqa: E402
 
+world = World.load(PATH)
+solid = world.solid
+stair_cells = world.stair_cells
+passable = world.passable
+standable = world.standable
+neighbors = world.neighbors
 
-def passable(p):
-    b = solid.get(p)
-    return b is None or "door" in b
-
-
-def standable(p):
-    x, y, z = p
-    below = solid.get((x, y - 1, z))
-    return (below is not None and "door" not in below
-            and passable(p) and passable((x, y + 1, z)))
-
-
-DIRS = [(dx, dz) for dx in (-1, 0, 1) for dz in (-1, 0, 1) if (dx, dz) != (0, 0)]
-
-
-def neighbors(p):
-    x, y, z = p
-    for dx, dz in DIRS:
-        for dy in (0, 1, -1, -2, -3):
-            q = (x + dx, y + dy, z + dz)
-            if standable(q):
-                if dy == 1:
-                    below = solid.get((q[0], q[1] - 1, q[2]))
-                    walk = below is not None and "stair" in below.split("[")[0]
-                    if not walk and not passable((x, y + 2, z)):
-                        continue
-                yield q
-                break
-
-
-seeds = []
-for p, b in solid.items():
-    if "oak_door" in b and "half=lower" in b and p[1] <= 3:
-        x, y, z = p
-        for dx, dz in DIRS:
-            q = (x + dx, y, z + dz)
-            if standable(q):
-                seeds.append(q)
-seen = set(seeds)
-dq = deque(seeds)
-while dq:
-    p = dq.popleft()
-    for q in neighbors(p):
-        if q not in seen:
-            seen.add(q)
-            dq.append(q)
+seeds = world.entrances()
+seen = world.reachable(seeds)
 
 # ---- stairwell clusters ----
 unvisited = set(stair_cells)

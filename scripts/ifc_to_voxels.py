@@ -49,6 +49,19 @@ import ifcopenshell.util.unit
 import numpy as np
 import trimesh
 
+# Rectification lives in its own module because it reads IFC wall placements
+# and nothing else -- no geometry, no meshing. Keeping it here meant a tool
+# that only wants to LOOK at the rectification had to import trimesh and the
+# whole voxel engine to reach it. See RECTIFY.md and preview_rectify.py.
+from rectify import (WING_HULL_MARGIN_M, adjacency_claims, apply_wing,
+                     apply_wings_piecewise, compute_wing_transforms, wing_for_point,
+                     wing_records)
+# The same wings applied as a continuous field rather than a step at the hull.
+# Its own module because it shares only the wing records with the rigid path --
+# no hull test, no contact claim, no per-triangle assignment -- and because it
+# is off by default and measured, not assumed. See its docstring.
+from rectify_elastic import apply_wing_partial, apply_wings_elastic, blend_at_point
+
 # IFC element type -> coarse semantic class
 SEMANTIC_CLASSES = {
     "IfcWindow": "glass",
@@ -125,145 +138,22 @@ def class_for(ifc_type: str) -> str:
     return SEMANTIC_CLASSES.get(ifc_type, "other")
 
 
-def compute_wing_transforms(model, min_family=250, eps=9.0, min_wing=60):
-    """Phase-1 plan rectification: find off-grid WINGS and how to square them.
+def stair_shape(stair) -> str | None:
+    """The stair's shape enum, whichever schema the file speaks.
 
-    Buildings like UNBC are several orthogonal grids in one model: 65 % of
-    walls are axis-aligned but whole wings sit at e.g. 58° and voxelize as
-    jagged staircase lines. Each such wing is orthogonal *in its own frame*,
-    so the fix is a rigid rotation per wing, not per wall (see RECTIFY.md).
-
-    From the IFC wall placements (cheap - no geometry):
-      1. histogram wall plan-angles mod 90°; every off-axis angle family
-         with >= min_family walls is a rectification candidate;
-      2. cluster that family's walls spatially (union-find, eps metres) -
-         each cluster is one WING;
-      3. pivot = the wing wall nearest any axis-aligned wall (the seam with
-         the campus spine stays put while the far end swings);
-      4. of the two grid-aligning rotations (-a and 90-a) keep the one that
-         lands the fewest wing walls within 2 m of existing axis-aligned
-         walls (least overlap), ties to the smaller swing.
-
-    Returns wings as [{"eqs": hull half-planes, "pivot", "cos", "sin"}] in
-    world metres; None-safe consumer is extract().
+    IFC2X3 calls it `ShapeType`; IFC4 renamed it `PredefinedType` with the same
+    enumerators. Reading only `ShapeType` looks harmless -- getattr returns
+    None and the loop skips -- but on an IFC4 file it silently disables spiral
+    synthesis for EVERY spiral stair in the model, and the artifact (a jumpy
+    wall-pinched blob in the stairwell) reads as a voxelization limit rather
+    than a missed branch. The UNBC Autodesk export is IFC2X3; Reviter writes
+    IFC4, so both spellings reach this engine.
     """
-    import math
-    from ifcopenshell.util import placement as _placement
-    from scipy.spatial import ConvexHull
-
-    scale = ifcopenshell.util.unit.calculate_unit_scale(model)
-    pts, angs = [], []
-    for w in model.by_type("IfcWall") + model.by_type("IfcWallStandardCase"):
-        try:
-            M = _placement.get_local_placement(w.ObjectPlacement)
-        except Exception:
-            continue
-        pts.append((float(M[0][3]) * scale, float(M[1][3]) * scale))
-        angs.append(math.degrees(math.atan2(M[1][0], M[0][0])) % 90.0)
-    P = np.asarray(pts)
-    A = np.asarray(angs)
-    on_axis = (A < 3) | (A > 87)
-    main = P[on_axis][::3]
-
-    families = []
-    off = ~on_axis
-    binned = np.round(A[off]).astype(int) % 90
-    for b, n in Counter(binned.tolist()).most_common():
-        if n < min_family or any(abs(b - fb) <= 4 for fb in families):
-            continue
-        families.append(b)
-
-    def cluster(Q):
-        n = len(Q)
-        parent = list(range(n))
-
-        def find(i):
-            while parent[i] != i:
-                parent[i] = parent[parent[i]]
-                i = parent[i]
-            return i
-
-        cells = defaultdict(list)
-        for i, (x, y) in enumerate(Q):
-            cells[(int(x // eps), int(y // eps))].append(i)
-        for (cx, cy), idx in cells.items():
-            neigh = [j for dx in (-1, 0, 1) for dy in (-1, 0, 1)
-                     for j in cells.get((cx + dx, cy + dy), [])]
-            for i in idx:
-                for j in neigh:
-                    if j > i and np.hypot(*(Q[i] - Q[j])) <= eps:
-                        ri, rj = find(i), find(j)
-                        if ri != rj:
-                            parent[ri] = rj
-        roots = defaultdict(list)
-        for i in range(n):
-            roots[find(i)].append(i)
-        return [Q[idx] for idx in roots.values() if len(idx) >= min_wing]
-
-    def rotated(Q, pivot, deg):
-        t = math.radians(deg)
-        R = np.array([[math.cos(t), -math.sin(t)], [math.sin(t), math.cos(t)]])
-        return (Q - pivot) @ R.T + pivot
-
-    def overlap(Q):
-        d2 = ((Q[:, None, :] - main[None, :, :]) ** 2).sum(2).min(axis=1)
-        return int((d2 < 4.0).sum())
-
-    wings = []
-    for fam in families:
-        fam_pts = P[off][np.abs(((binned - fam) + 45) % 90 - 45) <= 4]
-        for W in cluster(fam_pts):
-            d2 = ((W[:, None, :] - main[None, :, :]) ** 2).sum(2)
-            i, j = np.unravel_index(np.argmin(d2), d2.shape)
-            pivot = (W[i] + main[j]) / 2.0
-            cands = sorted((-float(fam), 90.0 - float(fam)), key=abs)
-            deg = min(cands, key=lambda d: (overlap(rotated(W, pivot, d)), abs(d)))
-            # push-apart: rotation alone cannot guarantee the wing does not
-            # swing INTO the main building (measured on UNBC: the big east
-            # wing's +32 put ~2% of its walls inside the spine). If the
-            # rotated wing still clips, translate it outward in whole-metre
-            # steps until interpenetration is (near) minimal - the seam gap
-            # this opens is exactly what stitch_seams bridges afterwards.
-            R = rotated(W, pivot, deg)
-            best_t = (0.0, 0.0)
-            best_c = overlap(R)
-            if best_c > max(3, int(0.005 * len(W))):
-                for ang in range(0, 360, 45):
-                    ux, uy = math.cos(math.radians(ang)), math.sin(math.radians(ang))
-                    for dist in (1, 2, 3, 4, 5):
-                        c = overlap(R + np.array([ux * dist, uy * dist]))
-                        # prefer less clipping, then the smaller shove
-                        if c + 0.4 * dist < best_c + 0.4 * math.hypot(*best_t):
-                            best_c = c
-                            best_t = (round(ux * dist, 3), round(uy * dist, 3))
-            hull = ConvexHull(W)
-            wings.append({"eqs": hull.equations.copy(), "pivot": pivot,
-                          "deg": deg, "n": len(W), "shift": best_t,
-                          "cos": math.cos(math.radians(deg)),
-                          "sin": math.sin(math.radians(deg))})
-    return wings
+    return getattr(stair, "ShapeType", None) or getattr(stair, "PredefinedType", None)
 
 
-def wing_for_point(wings, x, y, margin=2.5):
-    for w in wings:
-        if all(e[0] * x + e[1] * y + e[2] <= margin for e in w["eqs"]):
-            return w
-    return None
-
-
-def apply_wing(w, v):
-    """Rigidly rotate (and push-apart shift) verts about the wing pivot."""
-    px, py = w["pivot"]
-    c, s = w["cos"], w["sin"]
-    tx, ty = w.get("shift", (0.0, 0.0))
-    out = v.copy()
-    dx, dy = v[:, 0] - px, v[:, 1] - py
-    out[:, 0] = px + c * dx - s * dy + tx
-    out[:, 1] = py + s * dx + c * dy + ty
-    return out
-
-
-def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
+def extract(model, threads: int, spiral_mode: str = "synth", wings=None,
+            rectify_band_m: float = 0.0):
     """Iterate geometry once.
 
     Returns (solid meshes by class, door meshes, spiral assemblies, stats).
@@ -280,7 +170,7 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
     spiral_part_of: dict[int, int] = {}
     if spiral_mode == "synth":
         for st in model.by_type("IfcStair"):
-            if getattr(st, "ShapeType", None) != "SPIRAL_STAIR":
+            if stair_shape(st) != "SPIRAL_STAIR":
                 continue
             for rel in st.IsDecomposedBy or []:
                 for obj in rel.RelatedObjects:
@@ -303,27 +193,95 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
     excluded_counts: Counter = Counter()
     processed = 0
 
+    # Drain the iterator, THEN process in element order. A multi-threaded
+    # iterator yields shapes in thread-completion order, so the same file
+    # converts differently from one run to the next: measured on the fixture
+    # under load, two runs at --threads 8 differ by 129 of 6,058 blocks, and in
+    # one of them a whole storey fell from 99% reachable to 0%. Order matters
+    # because several decisions here are taken by whichever element arrives
+    # first -- a wing assignment is cached on an aggregate's first member, and
+    # an equal-priority cell keeps its first writer.
+    #
+    # It costs no extra memory in practice: every vertex array below is
+    # retained until the merge anyway.
+    drained = []
     while True:
         shape = iterator.get()
-        element = model.by_id(shape.id)
-        ifc_type = element.is_a()
         geom = shape.geometry
-        v = np.asarray(geom.verts, dtype=np.float64).reshape((-1, 3))
-        f = np.asarray(geom.faces, dtype=np.int64).reshape((-1, 3))
+        drained.append((
+            shape.id,
+            np.asarray(geom.verts, dtype=np.float64).reshape((-1, 3)),
+            np.asarray(geom.faces, dtype=np.int64).reshape((-1, 3)),
+        ))
+        if not iterator.next():
+            break
+    drained.sort(key=lambda item: item[0])
+
+    # The hull is built from wall placements, so it misses whatever hangs on
+    # the wing's facade without being a wall -- curtain panels and mullions,
+    # measured at 68% of everything the move leaves behind. Claim those by
+    # CONTACT, once, before anything is transformed.
+    #
+    # Under an elastic band there is no membership to claim past: every vertex
+    # carries its own weight, so the claim is skipped along with the hull test.
+    claimed = ({} if rectify_band_m else
+               adjacency_claims([(i, v) for i, v, _ in drained], wings)) if wings else {}
+    if claimed:
+        print(f"Rectify: {len(claimed)} element(s) claimed by contact with a wing "
+              f"the hull did not reach", flush=True)
+    if wings and rectify_band_m:
+        print(f"Rectify: ELASTIC, {rectify_band_m} m band -- the wing rotation ramps "
+              f"to zero across the hull boundary instead of stepping at it. Plates "
+              f"spanning a seam stretch rather than tear; see RECTIFY.md.", flush=True)
+
+    for shape_id, v, f in drained:
+        element = model.by_id(shape_id)
+        ifc_type = element.is_a()
 
         if wings and len(v):
             # rectification: rotate every element of an off-grid wing into
-            # the wing's own (orthogonal) frame. Assignment is cached per
-            # AGGREGATE root so a stair and all its flights/stringers/
-            # railings rotate together even if a member's own centroid
-            # falls just outside the wing hull.
+            # the wing's own (orthogonal) frame.
             dec = getattr(element, "Decomposes", None)
-            root = dec[0].RelatingObject.id() if dec else shape.id
-            if root not in wing_cache:
-                cx, cy = v[:, 0].mean(), v[:, 1].mean()
-                wing_cache[root] = wing_for_point(wings, cx, cy)
-            if wing_cache[root] is not None:
-                v = apply_wing(wing_cache[root], v)
+            if dec:
+                # An AGGREGATE moves whole: a stair's flights, stringers and
+                # railings have to arrive together, and half a stair placed
+                # correctly is worse than a whole one placed loosely. Cached on
+                # the root so a member whose own centroid falls just outside
+                # the hull still follows its parent.
+                root = dec[0].RelatingObject.id()
+                if root not in wing_cache:
+                    cx, cy = v[:, 0].mean(), v[:, 1].mean()
+                    wing_cache[root] = (blend_at_point(wings, cx, cy, rectify_band_m)
+                                        if rectify_band_m
+                                        else (wing_for_point(wings, cx, cy), 1.0))
+                wing, weight = wing_cache[root]
+                if wing is not None:
+                    # Rigidly either way. A wall 6% longer than it was is a
+                    # wall; a stair sheared by 6% is a stair whose treads no
+                    # longer meet its stringers, and the climb test reads
+                    # treads. An assembly deforms as a body or not at all.
+                    v = apply_wing_partial(wing, weight, v) if rectify_band_m \
+                        else apply_wing(wing, v)
+            elif shape_id in claimed:
+                # Joined to a wing the hull did not reach. It moves whole:
+                # cutting a mullion at a hull edge it is entirely outside of
+                # would tear the thing this pass exists to keep together.
+                v = apply_wing(claimed[shape_id], v)
+            else:
+                # Everything else is assigned PER TRIANGLE, not per element.
+                # By centroid, a floor slab spanning the wing and the spine
+                # stays behind while every wall standing on it turns 32 or 58
+                # degrees away -- measured at 90-99% of walls rotating against
+                # 25-78% of plates, and it is why a rectified build had
+                # storeys of bare plate with nothing in the column at all.
+                #
+                # Elastic instead assigns per VERTEX, which needs no
+                # subdivision and no assignment at all: a continuous field has
+                # nothing to cut at.
+                if rectify_band_m:
+                    v = apply_wings_elastic(wings, v, rectify_band_m)
+                else:
+                    v, f = apply_wings_piecewise(wings, v, f)
 
         if ifc_type in EXCLUDE_TYPES:
             excluded_counts[ifc_type] += 1
@@ -334,8 +292,8 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
                                     "gid": element.GlobalId})
                 type_counts[ifc_type] += 1
                 processed += 1
-        elif shape.id in spiral_part_of and len(v):
-            spirals[spiral_part_of[shape.id]].append(v)
+        elif shape_id in spiral_part_of and len(v):
+            spirals[spiral_part_of[shape_id]].append(v)
             type_counts[ifc_type] += 1
             processed += 1
         elif len(v) and len(f):
@@ -352,16 +310,13 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None):
             # at coarse pitch) can be rebuilt as clean walkable runs later.
             if cls == "stair":
                 dec = getattr(element, "Decomposes", None)
-                aid = dec[0].RelatingObject.id() if dec else shape.id
+                aid = dec[0].RelatingObject.id() if dec else shape_id
                 stair_groups[aid].append(v)
             verts_by_class[cls].append(v)
             faces_by_class[cls].append(f + offset_by_class[cls])
             offset_by_class[cls] += len(v)
             type_counts[ifc_type] += 1
             processed += 1
-
-        if not iterator.next():
-            break
 
     meshes: dict[str, trimesh.Trimesh] = {}
     for cls in verts_by_class:
@@ -1502,6 +1457,251 @@ def connect_hidden_rooms(winner, grid):
     return connected, hidden_found, len(hidden), carved
 
 
+def close_seam_walls(winner, grid, wings, seam_log=(), band_m=6.0,
+                     min_headroom=2, look_up=8, halo=2):
+    """Wall the envelope that `--rectify` tore open.
+
+    Rectification moves a wing several metres -- a rotation plus a push-apart
+    shove of up to 5 m -- so the floor plate it shares with the spine is cut at
+    the wing hull and the two halves end up metres apart. `apply_wings_piecewise`
+    makes the cut clean; it cannot make the canyon between the halves go away,
+    because the canyon is the point. What it leaves is enclosed floor whose wall
+    is now somewhere else, and a player indoors looking straight out.
+
+    Measured on the real building: of the interior cells that can see straight
+    out of a rectified build, 707 are NOT open in the faithful build, and they
+    sit within 4 m of a wing hull four times as often as interior cells do
+    generally. That is the seam, and this closes it.
+
+    The rule is about the ENVELOPE, not the plate. A column is indoors at a
+    level when it has floor under it and something over it; where an indoors
+    column touches one that is not, the building's skin belongs, and this fills
+    the skin from the floor to the ceiling wherever it is missing. Walling the
+    plate's edge instead left a quarter of the tear open, because a torn plate
+    often runs on past where its roof stops.
+
+    Only within `band_m` of a wing hull: everywhere else, a missing wall is the
+    source model's business and closing it would wall up colonnades and
+    entrance canopies that are meant to be open.
+
+    Runs AFTER the stitcher for the reason `cap_envelope` does -- the corridors
+    have to be cut before anything is built across them -- and keeps `halo`
+    cells clear of every corridor so it cannot seal one.
+
+    Returns the number of cells walled.
+    """
+    if not wings:
+        return 0
+    X, plane, pitch = grid["X"], grid["plane"], grid["pitch"]
+    all_min, dims = grid["all_min"], grid["dims"]
+    wall = CLASS_BLOCKS["wall"]
+    prio = CLASS_PRIORITY.index("wall")
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    # Storey plates only. Counting stair mass and structure as floor too was
+    # tried: it walls around stair landings and structural ledges and strands
+    # a thousand more interior cells for forty fewer leaks.
+    STOOD_ON = {CLASS_BLOCKS["floor"], CLASS_BLOCKS["roof"]}
+    columns: dict[tuple[int, int], set[int]] = {}
+    plates: dict[tuple[int, int], set[int]] = {}
+    for k, (_, block) in winner.items():
+        z = k // plane
+        rem = k - z * plane
+        y = rem // X
+        x = rem - y * X
+        columns.setdefault((x, y), set()).add(z)
+        if block in STOOD_ON:
+            plates.setdefault((x, y), set()).add(z)
+
+    def ceiling_over(column, z):
+        here = columns.get(column, ())
+        return next((z + h for h in range(min_headroom + 1, look_up + 1) if z + h in here),
+                    None)
+
+    def indoors(column, z):
+        return z in plates.get(column, ()) and ceiling_over(column, z) is not None
+
+    # Never build across a corridor the stitcher just cut.
+    blocked = set()
+    for entry in seam_log:
+        (fx, fy, fz), (tx, ty, tz) = entry["from_xyz"], entry["to_xyz"]
+        steps = max(abs(tx - fx), abs(ty - fy), abs(tz - fz)) + 1
+        for i in range(steps):
+            t = i / max(1, steps - 1)
+            cx, cy, cz = (round(fx + (tx - fx) * t), round(fy + (ty - fy) * t),
+                          round(fz + (tz - fz) * t))
+            for dx in range(-halo, halo + 1):
+                for dy in range(-halo, halo + 1):
+                    for dz in range(-1, look_up + 1):
+                        blocked.add((cx + dx, cy + dy, cz + dz))
+
+    slack_cache: dict[tuple[int, int], float] = {}
+
+    def slack(x, y):
+        """Metres inside (negative) or outside (positive) the nearest hull."""
+        hit = slack_cache.get((x, y))
+        if hit is None:
+            px = all_min[0] + x * pitch
+            py = all_min[1] + y * pitch
+            hit = min(max(e[0] * px + e[1] * py + e[2] for e in w["eqs"]) - WING_HULL_MARGIN_M
+                      for w in wings)
+            slack_cache[(x, y)] = hit
+        return hit
+
+    walled = 0
+    for column, levels in list(plates.items()):
+        x, y = column
+        if abs(slack(x, y)) > band_m:
+            continue
+        for z in sorted(levels):
+            here = columns[column]
+            if any(z + h in here for h in range(1, min_headroom + 1)):
+                continue                       # no room to stand, so no wall
+            ceiling = ceiling_over(column, z)
+            if ceiling is None:
+                continue                       # a roof deck, not a room
+            # Only where the skin is ENTIRELY absent. A glazed facade
+            # voxelizes sparsely -- mullions and a few panes -- and filling the
+            # gaps between them turns a curtain wall into concrete. On the real
+            # building, without this the pass wrote 9,842 cells, sealed 326
+            # entrances and cost 4,178 interior cells.
+            if any(z + h in here for h in range(1, ceiling - z)):
+                continue
+            # A doorway is a hole in the envelope on purpose.
+            if any(DOOR_BLOCK in (winner.get(key(x + dx, y + dy, z + h), (0, ""))[1])
+                   for dx, dy in ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1))
+                   for h in range(0, ceiling - z + 1)):
+                continue
+            # A CANYON side: the floor itself stops and the air beyond is
+            # open at head height. Not merely "the roof stops here" -- that
+            # rule was tried, and walling every indoors/outdoors boundary in
+            # the band wrote 9,842 cells, stranded 2,500 interior cells and
+            # sealed 326 entrances to close 96 more leaks. Where the floor
+            # runs on, the missing skin is the source model's business and a
+            # room is worth more than a metric.
+            open_side = False
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                beyond = columns.get((x + dx, y + dy), ())
+                if z not in beyond and (z + 1) not in beyond and (z + 2) not in beyond:
+                    open_side = True
+                    break
+            if not open_side:
+                continue
+            # All the way to the ceiling. A wall three high under a five-high
+            # ceiling stops the eye-level ray and still leaves a slot with
+            # daylight in it, which is the defect with extra steps.
+            for h in range(1, ceiling - z):
+                if (x, y, z + h) in blocked or z + h >= dims[2]:
+                    continue
+                k = key(x, y, z + h)
+                if k in winner:
+                    continue
+                winner[k] = (prio, wall)
+                walled += 1
+    return walled
+
+
+def cap_envelope(winner, grid, min_neighbours=3, min_headroom=2, rounds=3):
+    """Roof over interior columns whose floor reaches past the roof above it.
+
+    A floor plate and the roof plate above it are separate meshes that round
+    separately, and a wing that `--rectify` rotated rounds differently again,
+    so an edge column can keep its floor and lose its cover. The player stands
+    inside the building looking straight up at the sky.
+
+    The rule is about the eaves rather than about potholes -- these cells are
+    at the edge of a plate, so `patch_floor_holes`'s "surrounded on 6 of 8
+    sides" test can never fire on them. A column is capped when it has a floor,
+    nothing at all above it, and at least `min_neighbours` of its 8 neighbours
+    are covered; the cap goes at the lowest of those neighbours' cover levels.
+
+    Lesson S12 governs the rest: a pass that ADDS cells must not crush what is
+    under them, so a cap needs `min_headroom` clear cells above the floor and
+    is skipped otherwise.
+
+    Iterated, for the same reason `patch_floor_holes` is: capping a cell covers
+    its neighbours, so a corner that had two covered neighbours has three on
+    the next pass. Without rounds the pass stops at the first ring and leaves
+    the corners open.
+
+    The neighbour count alone is not enough to say a column is INSIDE. Stand on
+    a low roof one block from a tall wing and three of your eight neighbours
+    are the wing, so the count fires and the pass roofs over open terrace. So a
+    candidate must also fail to ESCAPE: flood horizontally at its own level
+    through columns nothing covers, and if that flood reaches the edge of the
+    model the column is outdoors and is left alone. Two levels of a stepped
+    roof still cap each other; a terrace beside a tower does not get a lid.
+    """
+    try:
+        from scipy import ndimage
+    except ImportError:
+        # Without the escape test the neighbour count roofs over terraces, so
+        # the honest degraded behaviour is to cap nothing.
+        return 0
+    X, plane = grid["X"], grid["plane"]
+    dims = grid["dims"]
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    top: dict[tuple[int, int], int] = {}
+    floor_top: dict[tuple[int, int], int] = {}
+    for k, (_, block) in winner.items():
+        z = k // plane
+        rem = k - z * plane
+        y = rem // X
+        x = rem - y * X
+        column = (x, y)
+        if z > top.get(column, -1):
+            top[column] = z
+        if block in (CLASS_BLOCKS["floor"], CLASS_BLOCKS["roof"],
+                     CLASS_BLOCKS["stair"]) and z > floor_top.get(column, -1):
+            floor_top[column] = z
+
+    def escapes(level):
+        """Columns that reach the edge of the model without passing under a
+        roof, as a lookup keyed by plan column."""
+        free = np.ones((dims[0], dims[1]), dtype=bool)
+        for (x, y), z in top.items():
+            if z >= level + min_headroom + 1:
+                free[x, y] = False
+        labels, _ = ndimage.label(free)
+        border = set(labels[0, :]) | set(labels[-1, :]) | set(labels[:, 0]) | set(labels[:, -1])
+        border.discard(0)
+        return labels, border
+
+    capped = 0
+    for _ in range(rounds):
+      added = 0
+      candidates = [(column, z) for column, z in floor_top.items()
+                    if top.get(column, -1) == z]     # nothing covers it yet
+      outdoor_at = {}
+      for level in {z for _, z in candidates}:
+          outdoor_at[level] = escapes(level)
+      for column, floor_z in candidates:
+          x, y = column
+          covers = [top[(x + dx, y + dy)] for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                    if (dx or dy) and (x + dx, y + dy) in top
+                    and top[(x + dx, y + dy)] >= floor_z + min_headroom + 1]
+          if len(covers) < min_neighbours:
+              continue
+          labels, border = outdoor_at[floor_z]
+          if labels[x, y] in border:
+              continue                       # open terrace, not a missing roof
+          level = min(covers)
+          if level >= dims[2] or key(x, y, level) in winner:
+              continue
+          winner[key(x, y, level)] = (CLASS_PRIORITY.index("roof"), CLASS_BLOCKS["roof"])
+          top[column] = level
+          capped += 1
+          added += 1
+      if not added:
+          break
+    return capped
+
+
 def patch_floor_holes(winner, grid, min_ring=6, rounds=3):
     """Make storey plates contiguous: fill pothole gaps in floors/ceilings.
 
@@ -2085,9 +2285,180 @@ def unpack_and_write(winner, grid, out_dir):
     }
 
 
+def self_test() -> int:
+    """The one pass that ADDS cells, on the two shapes it has to tell apart."""
+    X = Y = 20
+    grid = {"X": X, "plane": X * Y, "dims": (X, Y, 12), "pitch": 1.0}
+
+    def key(x, y, z):
+        return x + X * y + X * Y * z
+
+    floor = (CLASS_PRIORITY.index("floor"), CLASS_BLOCKS["floor"])
+    roof = (CLASS_PRIORITY.index("roof"), CLASS_BLOCKS["roof"])
+    failures = []
+
+    # A terrace at z=3 running up against a tower that rises to z=10. Three of
+    # each edge column's eight neighbours are the tower, so the neighbour count
+    # alone would roof the terrace over.
+    terrace = {}
+    for x in range(X):
+        for y in range(Y):
+            terrace[key(x, y, 3)] = floor
+    for x in range(10, X):
+        for y in range(Y):
+            for z in range(4, 11):
+                terrace[key(x, y, z)] = roof
+    capped = cap_envelope(terrace, grid)
+    if capped:
+        failures.append(f"an open terrace beside a tower was roofed over ({capped} cells)")
+
+    # A 3x3 light well through an otherwise complete roof: the floor below it
+    # genuinely has no cover, and nothing about it can escape sideways.
+    well = {}
+    for x in range(X):
+        for y in range(Y):
+            well[key(x, y, 3)] = floor
+            if not (8 <= x <= 10 and 8 <= y <= 10):
+                well[key(x, y, 8)] = roof
+    capped = cap_envelope(well, grid)
+    if capped != 9:
+        failures.append(f"the 3x3 hole in the roof should be capped with 9 cells, got {capped}")
+
+    # A wing rotation applied to a plate that spans the seam. Assigned by the
+    # element's centroid the whole plate stays put (its centroid is outside the
+    # hull) while the walls standing on it turn -- the bare-plate defect.
+    wing = {"eqs": [(-1.0, 0.0, 0.0)],          # the hull is x >= 0
+            "pivot": (0.0, 0.0), "cos": 1.0, "sin": 0.0, "shift": (0.0, 100.0)}
+    slab = np.array([[-16.0, 0, 0], [4.0, 0, 0], [4.0, 4.0, 0], [-16.0, 4.0, 0]])
+    faces = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int64)
+    centre = slab[:, :2].mean(axis=0)
+    if wing_for_point([wing], centre[0], centre[1], margin=0.0) is not None:
+        failures.append("the fixture's plate is not claimed by its centroid; "
+                        "the test needs a plate that straddles")
+    moved, mfaces = apply_wings_piecewise([wing], slab, faces, max_edge=1.0, margin=0.0)
+    if len(mfaces) <= len(faces):
+        failures.append("a straddling plate should be subdivided, not moved whole")
+    # The wing moves 100 m north, so its half of the plate leaves the y=0..4
+    # band; the spine's half must be exactly where it was, west edge included,
+    # and must not reach east of the hull edge.
+    if not (moved[:, 1] > 99.0).any():
+        failures.append("the plate's hull half should have travelled with the wing")
+    band = moved[(moved[:, 1] >= -0.001) & (moved[:, 1] <= 4.001)]
+    if not len(band) or abs(band[:, 0].min() + 16.0) > 0.001:
+        failures.append("the plate's spine half should have stayed where it was, "
+                        f"west edge at x=-16; got {band[:, 0].min() if len(band) else None}")
+    if len(band) and band[:, 0].max() > 1.001:
+        failures.append(f"the spine half should stop at the hull edge, "
+                        f"got x up to {band[:, 0].max():.2f}")
+
+    # A torn seam. One plate at z=3 cut into a spine half (x<10) and a wing
+    # half (x>=14) with a canyon between them, and a ceiling at z=8 that stops
+    # at x=17 while the plate runs on to x=34. The pass must wall BOTH canyon
+    # edges AND the point where the ROOF stops -- walling the plate's edge
+    # instead left a quarter of the real tear open, because a torn plate often
+    # runs past where its roof ends. Everything beyond the seam band is the
+    # source model's business and must be left alone.
+    seam_wing = [{"eqs": [(-1.0, 0.0, 14.0)],        # hull is x >= 14 (metres)
+                  "pivot": (0.0, 0.0), "cos": 1.0, "sin": 0.0, "shift": (0.0, 0.0)}]
+    X = Y = 40
+    seam_grid = {"X": X, "plane": X * Y, "dims": (X, Y, 12), "pitch": 1.0,
+                 "all_min": np.zeros(3)}
+
+    def skey(x, y, z):
+        return x + X * y + X * Y * z
+
+    torn = {}
+    for x in list(range(2, 10)) + list(range(14, 34)):
+        for y in range(2, 34):
+            torn[skey(x, y, 3)] = floor
+            if x < 10 or x <= 17:
+                torn[skey(x, y, 8)] = roof
+    before = len(torn)
+    walled = close_seam_walls(torn, seam_grid, seam_wing, band_m=6.0)
+    if not walled:
+        failures.append("the torn seam should be walled")
+    for x, why in ((9, "the spine's canyon edge"), (14, "the wing's canyon edge")):
+        if not all(skey(x, y, 4) in torn for y in range(4, 30)):
+            failures.append(f"{why} (x={x}) should be walled")
+    for x, why in ((17, "where the roof stops but the floor runs on"),
+                   (25, "unroofed plate beyond the band"),
+                   (33, "the plate's outer rim")):
+        if skey(x, 20, 4) in torn:
+            failures.append(f"{why} (x={x}) should be left alone")
+    if skey(16, 20, 4) in torn:
+        failures.append("a column with indoors on all four sides is not the skin")
+    if torn[skey(5, 20, 3)][1] != CLASS_BLOCKS["floor"]:
+        failures.append("the pass must not overwrite the plate it stands on")
+    if len(torn) - before != walled:
+        failures.append("every walled cell should be a NEW cell")
+
+    # Contact claiming: a mullion hanging on a wing's facade, outside the hull
+    # and touching a wall inside it, travels with the wing. A second mullion
+    # the same distance out but touching nothing does not, and neither does one
+    # far beyond the hull's reach.
+    hull = [{"eqs": [(-1.0, 0.0, 0.0)],          # the hull is x >= 0
+             "pivot": (0.0, 0.0), "cos": 1.0, "sin": 0.0, "shift": (0.0, 100.0)}]
+    def box(x0, y0, x1, y1):
+        return np.array([[x0, y0, 0.0], [x1, y0, 0.0], [x1, y1, 3.0], [x0, y1, 3.0]])
+    claims = adjacency_claims([
+        (1, box(0.1, 0.0, 6.0, 0.3)),      # a wall INSIDE the hull: a seed
+        (2, box(-0.4, 0.0, -0.1, 0.3)),    # touching it, just outside: claimed
+        (3, box(-0.4, 40.0, -0.1, 40.3)),  # same distance out, touching nothing
+        (4, box(-30.0, 0.0, -29.7, 0.3)),  # touching nothing, far beyond reach
+    ], hull, margin=0.0)
+    if 1 in claims:
+        failures.append("an element the hull already claims needs no contact claim")
+    if 2 not in claims:
+        failures.append("a mullion touching a claimed wall should travel with the wing")
+    if 3 in claims:
+        failures.append("an element touching nothing must not be claimed")
+    if 4 in claims:
+        failures.append("an element beyond the hull's reach must not be claimed")
+
+    # And the one that matters most: a LONG element that merely reaches the
+    # wing is not claimed. Contact is tested on boxes, so a corridor wall that
+    # touches a wing at one end touches it by its box too -- and claimed, the
+    # whole corridor swings away. On the fixture that opened 138 see-through
+    # cells in a building that had none.
+    reaching = adjacency_claims([
+        (1, box(0.1, 0.0, 6.0, 0.3)),      # the seed, inside the hull
+        (2, box(-40.0, 0.0, -0.1, 0.3)),   # a long wall touching it from outside
+    ], hull, margin=0.0)
+    if 2 in reaching:
+        failures.append("a long wall that merely reaches the wing must not be dragged into it")
+
+    # And the claim is bounded: it does not walk off across the building. A
+    # chain of touching elements leading away from the hull stops at reach_m.
+    chain = [(1, box(0.1, 0.0, 6.0, 0.3))]
+    for step in range(1, 12):
+        chain.append((10 + step, box(-step * 1.0, 0.0, -step * 1.0 + 0.9, 0.3)))
+    walked = adjacency_claims(chain, hull, reach_m=6.0, margin=0.0)
+    if not walked:
+        failures.append("a chain of touching elements should claim its near links")
+    if any(identifier > 16 for identifier in walked):
+        failures.append(f"the contact claim walked past its reach: {sorted(walked)}")
+
+    # And the fast path: an element wholly inside is moved whole, unsubdivided.
+    inner = np.array([[1.0, 0, 0], [2.0, 0, 0], [2.0, 1.0, 0]])
+    mv, mf = apply_wings_piecewise([wing], inner, np.array([[0, 1, 2]], dtype=np.int64),
+                                   margin=0.0)
+    if len(mf) != 1 or np.allclose(mv, inner):
+        failures.append("an element wholly inside a wing should move whole, unsubdivided")
+
+    if failures:
+        print("self-test FAILED")
+        for line in failures:
+            print(f"  {line}")
+        return 1
+    print("self-test passed: a light well is capped, a terrace is left open, "
+          "a plate spanning a seam tears at the seam, the tear is walled, "
+          "and a mullion travels with the wall it hangs on")
+    return 0
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("ifc", type=Path)
+    ap.add_argument("ifc", type=Path, nargs="?")
     ap.add_argument("--pitch", type=float, default=1.0, help="Voxel size in METRES")
     ap.add_argument("--doors", choices=["functional", "air", "solid"], default="functional",
                     help="how to represent IfcDoor (default: functional openable door)")
@@ -2106,13 +2477,28 @@ def main() -> None:
                          "grid about their seam with the main building, so "
                          "their walls/corridors voxelize clean instead of "
                          "jagged (see RECTIFY.md)")
+    ap.add_argument("--rectify-band", type=float, default=0.0, metavar="METRES",
+                    help="EXPERIMENTAL, off by default. Apply --rectify as a "
+                         "continuous field instead of a step at the wing hull: "
+                         "the rotation ramps to zero across a band this wide, "
+                         "so a plate spanning a seam stretches rather than "
+                         "tears. Measured WORSE than the rigid transform for "
+                         "drawings (REVITER.md 2j); kept because a stretched "
+                         "plate may still be walkable where a torn one is a "
+                         "canyon. Implies --rectify")
     ap.add_argument("--floor-slabs", action="store_true",
                     help="convert thin single-voxel floor plates to bottom slabs (default: full cubes)")
     ap.add_argument("--fill", action="store_true",
                     help="Solid-fill each class (rarely wanted; meaningless for non-watertight IFC)")
     ap.add_argument("--out-dir", type=Path, default=Path("out/unbc"))
     ap.add_argument("--threads", type=int, default=max(1, multiprocessing.cpu_count() - 1))
+    ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
+
+    if args.self_test:
+        raise SystemExit(self_test())
+    if not args.ifc:
+        ap.error("give an IFC file, or --self-test")
 
     ifc_path = args.ifc.expanduser().resolve()
     if not ifc_path.exists():
@@ -2127,6 +2513,8 @@ def main() -> None:
     model = ifcopenshell.open(str(ifc_path))
     print(f"Extracting geometry with {args.threads} threads ...", flush=True)
     wings = None
+    if args.rectify_band and not args.rectify:
+        args.rectify = True                     # a band with nothing to bend is a no-op
     if args.rectify:
         wings = compute_wing_transforms(model)
         for w in wings:
@@ -2135,7 +2523,8 @@ def main() -> None:
             print(f"Rectify: wing of {w['n']} walls rotates {w['deg']:+.0f} deg "
                   f"about seam ({w['pivot'][0]:.0f}, {w['pivot'][1]:.0f}) m{shove}", flush=True)
     meshes, door_verts, spirals, stair_groups, ex_stats = extract(
-        model, args.threads, args.spiral, wings=wings)
+        model, args.threads, args.spiral, wings=wings,
+        rectify_band_m=args.rectify_band)
     print("Solid faces by class:", ex_stats["solid_faces_by_class"], flush=True)
     print(f"Door elements: {ex_stats['door_elements']}", flush=True)
 
@@ -2168,6 +2557,16 @@ def main() -> None:
           f"({terrain_cells} grass/dirt cells)", flush=True)
     seams_built, seam_cells, seam_log = stitch_seams(winner, grid)
     print(f"Stitched {seams_built} seam corridors ({seam_cells} cells)", flush=True)
+    seam_walls = close_seam_walls(winner, grid, wings, seam_log)
+    if wings:
+        print(f"Walled {seam_walls} cells along plate edges the wing moves tore open",
+              flush=True)
+    # After the stitcher, not before it. Capping adds blocks overhead, and a
+    # cap placed first constrains where a seam corridor can be carved -- on the
+    # fixture that cost 0.8% of the interior to close eight sky holes. Let the
+    # stitcher connect the building first, then close what is still open.
+    capped = cap_envelope(winner, grid)
+    print(f"Capped {capped} interior cells that were open to the sky", flush=True)
     lanterns = light_ceilings(winner, grid)
     print(f"Recessed {lanterns} ceiling sea lanterns for interior light", flush=True)
     if args.floor_slabs:
@@ -2221,13 +2620,35 @@ def main() -> None:
         "hidden_rooms_connected": rooms_connected,
         "hidden_rooms_left": rooms_left,
         "floor_holes_patched": holes_filled,
+        "envelope_capped": capped,
         "doors_grounded": doors_grounded,
         "ceiling_lanterns": lanterns,
         "seam_corridors": seams_built,
+        "seam_wall_cells": seam_walls,
         "slabs_converted": slabs_converted,
         "fences_connected": fences_connected,
         "world_bounds_min_m": grid["all_min"].tolist(),
         "model_size_m_xyz": (grid["dims"] * args.pitch).tolist(),
+        # The whole forward map, written down once so a consumer never has to
+        # rediscover it from the source. Everything needed to place an IFC
+        # coordinate in this world -- and, with `wings`, to undo a rectified
+        # build back to model space -- is in this block.
+        "voxel_transform": {
+            "world_metres_to_blocks_csv": (
+                "g = round((p_metres - world_bounds_min_m) / pitch_m); "
+                "blocks.csv row = [g.x, g.z, -g.y] - origin_shift_xyz"
+            ),
+            "note": (
+                "The y<->z swap negates the swapped horizontal axis: a bare "
+                "swap is orientation-reversing and would mirror the model "
+                "north<->south. IFC +Y is North, which is Minecraft -Z."
+            ),
+            "pitch_m": args.pitch,
+            "world_bounds_min_m": grid["all_min"].tolist(),
+            "wings_applied_before_voxelization": bool(wings),
+        },
+        # Present and empty on a faithful build; populated by --rectify.
+        "wings": wing_records(wings) if wings else [],
         **ex_stats,
         "per_class_voxels": per_class,
         **write_stats,
