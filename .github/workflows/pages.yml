@@ -7,7 +7,10 @@ name: Deploy renderers to GitHub Pages
 #   /blockcraft  the serverless BlockCraft build (world generated in-browser
 #                from the committed blockcraft/client/public/building.json)
 #
-# Enable Pages first: Settings -> Pages -> Source: GitHub Actions.
+# The "Configure Pages" step below enables Pages automatically (build type:
+# GitHub Actions) using the workflow's pages:write token, so no manual setup is
+# normally needed. If that auto-enable is ever blocked (e.g. org policy), enable
+# it once by hand: Settings -> Pages -> Source: GitHub Actions.
 
 on:
   workflow_dispatch:
@@ -36,6 +39,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      # Enable GitHub Pages (source: GitHub Actions) if it isn't already, so the
+      # deploy step below has a Pages site to deploy to. Without this, a repo
+      # that has never had Pages turned on fails deploy-pages with a 404
+      # ("Ensure GitHub Pages has been enabled").
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       # --- main page: minecraft-web-client (prebuilt self-host bundle) ---
       - name: Download minecraft-web-client self-host bundle
