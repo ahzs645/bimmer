@@ -45,11 +45,17 @@ async function main() {
   const noteProps = { oak_door: ['half', 'facing'], stone_brick_stairs: ['facing', 'half', 'shape'],
     smooth_stone_slab: ['type'], oak_fence: ['north', 'east', 'south', 'west'] }
   let scannedChunks = 0
+  let voidColumns = 0, signEntities = 0, signsWithText = 0
   for (const [cx, cz] of chunkCoords) {
     let chunk
     try { chunk = await anvil.load(cx, cz) } catch { chunk = null }
     if (!chunk) continue
     scannedChunks++
+    // a saved chunk is never regenerated, so an empty bottom is a hole to the void
+    for (let x = 0; x < 16; x++) for (let z = 0; z < 16; z++) {
+      const b = chunk.getBlock({ x, y: -64, z })
+      if (!b || b.name === 'air') voidColumns++
+    }
     for (let x = 0; x < 16; x++) for (let z = 0; z < 16; z++) for (let y = -8; y < 60; y++) {
       const b = chunk.getBlock({ x, y, z })
       if (!b || b.name === 'air' || b.name === 'cave_air') continue
@@ -90,6 +96,51 @@ async function main() {
       console.log(`PASS  ${label}: ${n} blocks`)
     }
   }
+
+  // --- signs: every sign block carries its text (block + block entity) ---
+  // Read from the raw region NBT, not the loaded chunks: prismarine-chunk's
+  // loadBlockEntities keys entities by x>>4 (the CHUNK index) instead of x&15,
+  // so every sign in a chunk at one height collapses onto one key on load.
+  {
+    const zlib = require('zlib')
+    const nbt = require('prismarine-nbt')
+    for (const f of fs.readdirSync(regionDir)) {
+      if (!/\.mca$/.test(f)) continue
+      const buf = fs.readFileSync(path.join(regionDir, f))
+      for (let i = 0; i < 1024; i++) {
+        const off = buf.readUInt32BE(i * 4) >> 8
+        if (!off) continue
+        const len = buf.readUInt32BE(off * 4096)
+        const raw = buf.slice(off * 4096 + 5, off * 4096 + 4 + len)
+        const tag = nbt.simplify(nbt.parseUncompressed(buf[off * 4096 + 4] === 1 ? zlib.gunzipSync(raw) : zlib.inflateSync(raw), 'big'))
+        for (const be of tag.block_entities || []) {
+          if (be.id !== 'minecraft:sign') continue
+          signEntities++
+          if (be.front_text && be.front_text.messages.some((m) => JSON.parse(m).text)) signsWithText++
+        }
+      }
+    }
+  }
+  const signBlocks = [...counts.entries()].filter(([n]) => /_sign$/.test(n)).reduce((a, [, c]) => a + c, 0)
+  if (!signBlocks && !signEntities) console.log('  --   room signs: absent in this world')
+  else {
+    const ok = signEntities === signBlocks && signsWithText === signEntities
+    console.log(`${ok ? 'PASS' : 'FAIL'}  room signs: ${signBlocks} blocks, ${signEntities} entities, ${signsWithText} with text`)
+    if (!ok) fail++
+  }
+
+  // --- playable in vanilla: ground under every saved column, world-gen + rules ---
+  console.log(`${voidColumns ? 'FAIL' : 'PASS'}  ground under every saved column (${voidColumns} open to the void)`)
+  if (voidColumns) fail++
+  try {
+    const nbt = require('prismarine-nbt')
+    const { parsed } = await nbt.parse(fs.readFileSync(path.join(worldDir, 'level.dat')))
+    const D = nbt.simplify(parsed).Data
+    const gen = D.WorldGenSettings && D.WorldGenSettings.dimensions['minecraft:overworld'].generator
+    const ok = gen && gen.type === 'minecraft:flat' && D.GameRules && D.GameRules.doMobSpawning === 'false'
+    console.log(`${ok ? 'PASS' : 'FAIL'}  level.dat world-gen + gamerules (generator=${gen && gen.type}, spawn=${D.SpawnX},${D.SpawnY},${D.SpawnZ})`)
+    if (!ok) fail++
+  } catch (e) { console.log('FAIL  level.dat unreadable: ' + e.message); fail++ }
 
   console.log(fail ? `\n${fail} check(s) failed` : '\nall required checks passed')
   if (fail) process.exit(1)

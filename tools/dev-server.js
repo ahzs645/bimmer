@@ -22,7 +22,9 @@ const BASE = parseInt(process.env.PORT || '8080', 10)
 const CACHE = path.join(ROOT, '.cache', 'mcraft')
 fs.mkdirSync(CACHE, { recursive: true })
 const UPSTREAM = 'https://mcraft.fun'
-const WORLD = path.join(ROOT, 'renderers', 'mcweb', 'unbc_world.zip')
+// MCWEB_WORLD=out/unbc_1m/world.zip serves a fresh export instead of the
+// committed deploy snapshot (what you want right after an engine change).
+const WORLD = path.resolve(ROOT, process.env.MCWEB_WORLD || path.join('renderers', 'mcweb', 'unbc_world.zip'))
 const BC_DIST = path.join(ROOT, 'blockcraft', 'client', 'dist')
 
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
