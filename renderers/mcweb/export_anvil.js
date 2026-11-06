@@ -223,7 +223,7 @@ function writeLevelDat(worldDir, opts, registry) {
   fs.writeFileSync(path.join(worldDir, 'level.dat'), zlib.gzipSync(buf))
 }
 
-// The widest exterior door whose outside has terrain under it: where a
+// The widest exterior door whose outside is open ground: where a
 // visitor would walk in. Returns blocks.csv coords of the standing cell in
 // front of it plus the yaw (vanilla degrees, 0 = +Z) that faces the door.
 function findEntrance(rows) {
@@ -243,6 +243,11 @@ function findEntrance(rows) {
         const x = d.x + sgn * fx * k, z = d.z + sgn * fz * k
         if (get(x, d.y, z) || get(x, d.y + 1, z)) continue
         if (!isGround(get(x, d.y - 1, z))) continue
+        // outdoors: terrain also runs UNDER the building, so earth below a
+        // cell no longer means the cell is outside -- open sky above does
+        let roofed = false
+        for (let j = 2; j < 24 && !roofed; j++) roofed = !!get(x, d.y + j, z)
+        if (roofed) continue
         // the door's run: same-facing lower halves side by side
         let leaves = 1
         for (const s of [1, -1]) {

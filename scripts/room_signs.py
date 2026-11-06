@@ -21,8 +21,16 @@ in blocks.csv coordinates. So:
   4. stand a sign on the floor at each label, in the nearest standable
      cell, facing the nearest door, with the number and the name
 
+Then the doors. A label is inside its room, so flooding the floor from the
+label's cell -- at its own level, never through a door -- finds the room,
+and the doors on that flood's edge are the room's doors. Each gets a wall
+sign at eye height on the wall beside it, on the side away from the room,
+so the name is read from the corridor as it is on campus. A flood that
+runs past `ROOM_MAX_CELLS` is a corridor or open plan, not a room, and gets
+no door sign.
+
 Signs have no collision box, so a sign never blocks a corridor, and no
-cell that is not already empty air over a floor is touched.
+cell that is not already empty air is touched.
 
 Writes a JSON list for renderers/mcweb/export_anvil.js --signs:
 
@@ -48,6 +56,10 @@ import numpy as np
 
 SIGN_WIDTH = 15          # characters that fit on one sign line (1.20 font)
 SKIP_NAMES = {"corridor", "corr", "hall", "hallway"}
+PLACEHOLDER_NAMES = {"unnamed area", "room", "unnamed", "area"}
+ROOM_MAX_CELLS = 600      # a flood bigger than this is not one room
+STEP = {"north": (0, -1), "south": (0, 1), "east": (1, 0), "west": (-1, 0)}
+FACING_OF = {v: k for k, v in STEP.items()}
 
 
 # ---------------------------------------------------------------- inputs
@@ -164,6 +176,8 @@ def sign_lines(name: str):
     parts = [p.strip() for p in name.replace("\\n", "\n").split("\n") if p.strip()]
     number = parts[0] if parts else ""
     rest = " ".join(parts[1:])
+    if rest.strip().lower() in PLACEHOLDER_NAMES:
+        rest = ""                       # the number alone, not "Unnamed area"
     return [number[:SIGN_WIDTH]] + wrap(rest)
 
 
@@ -204,7 +218,61 @@ def rotation_towards(cell, doors_xyz):
     return int(round(ang / (2 * math.pi) * 16)) % 16
 
 
-def build_signs(occ, plan_doors, placed, labels, max_rms=2.0, log=print):
+def flood_room(occ, start, max_cells=ROOM_MAX_CELLS):
+    """Floor cells of the room `start` stands in, at its own level, not
+    through doors. None when the flood is too big to be one room."""
+    seen, todo = {start}, [start]
+    y = start[1]
+    while todo:
+        x, _, z = todo.pop()
+        for dx, dz in STEP.values():
+            c = (x + dx, y, z + dz)
+            if c in seen:
+                continue
+            here = occ.get(c)
+            if here is not None:
+                continue                      # wall, door, glass: the edge
+            below = occ.get((c[0], y - 1, c[2]))
+            if below is None or "door" in below:
+                continue
+            seen.add(c)
+            if len(seen) > max_cells:
+                return None
+            todo.append(c)
+    return seen
+
+
+def door_signs(occ, room, lines, taken):
+    """Wall signs beside each door on the room's edge, facing out of it."""
+    y = next(iter(room))[1]
+    out = []
+    for (x, _, z) in room:
+        for dx, dz in STEP.values():
+            d = (x + dx, y, z + dz)
+            b = occ.get(d)
+            if b is None or "_door" not in b or "half=lower" not in b:
+                continue
+            # out of the room: through the door and one beyond
+            ox, oz = d[0] + dx, d[2] + dz
+            if (ox, y, oz) in room or (ox, y, oz) in occ:
+                continue
+            # the wall runs perpendicular to the way through
+            for sx, sz in ((dz, dx), (-dz, -dx)):
+                wall = (d[0] + sx, y + 1, d[2] + sz)
+                cell = (wall[0] + dx, y + 1, wall[2] + dz)
+                wb = occ.get(wall)
+                if (wb is None or any(t in wb for t in ("door", "glass", "fence", "stairs"))
+                        or cell in occ or cell in taken):
+                    continue
+                taken.add(cell)
+                out.append({"x": cell[0], "y": cell[1], "z": cell[2],
+                            "block": f"minecraft:oak_wall_sign[facing={FACING_OF[(dx, dz)]}]",
+                            "lines": lines})
+                break
+    return out
+
+
+def build_signs(occ, plan_doors, placed, labels, max_rms=2.0, log=print, with_doors=True):
     pairs = [(plan_doors[t], placed[t]) for t in placed if t in plan_doors]
     if len(pairs) < 20:
         raise SystemExit(f"only {len(pairs)} doors pair up between the plans and the IFC; "
@@ -225,6 +293,7 @@ def build_signs(occ, plan_doors, placed, labels, max_rms=2.0, log=print):
 
     doors_xyz = list(placed.values())
     taken, signs, skipped = set(), [], defaultdict(int)
+    door_signs_placed = []
     for lb in labels:
         title = lb["name"].split("\n")
         if len(title) > 1 and title[1].strip().lower().rstrip(".") in SKIP_NAMES:
@@ -240,12 +309,27 @@ def build_signs(occ, plan_doors, placed, labels, max_rms=2.0, log=print):
             skipped["no floor at the label"] += 1
             continue
         taken.add(cell)
+        lines = sign_lines(lb["name"])
         signs.append({"x": cell[0], "y": cell[1], "z": cell[2],
                       "block": f"minecraft:oak_sign[rotation={rotation_towards(cell, doors_xyz)}]",
-                      "lines": sign_lines(lb["name"]), "key": lb["key"]})
-    log(f"labels: {len(labels)}; signs placed: {len(signs)}; skipped: {dict(skipped)}")
+                      "lines": lines, "key": lb["key"]})
+        if with_doors:
+            room = flood_room(occ, cell)
+            if room is None:
+                skipped["door sign: not one room"] += 1
+                continue
+            ds = door_signs(occ, room, lines, taken)
+            if not ds:
+                skipped["door sign: no door on its edge"] += 1
+            for d in ds:
+                d["key"] = lb["key"]
+                door_signs_placed.append(d)
+    signs.extend(door_signs_placed)
+    log(f"labels: {len(labels)}; floor signs: {len(signs) - len(door_signs_placed)}; "
+        f"door signs: {len(door_signs_placed)}; skipped: {dict(skipped)}")
     return signs, {"pairs": len(pairs), "fit_pairs": int(mask.sum()), "rms_blocks": rms,
-                   "placed": len(signs), "skipped": dict(skipped)}
+                   "placed": len(signs), "door_signs": len(door_signs_placed),
+                   "skipped": dict(skipped)}
 
 
 # ---------------------------------------------------------------- self-test
@@ -268,6 +352,8 @@ def self_test() -> int:
         failures.append(f"lines: {sign_lines('06-270' + chr(10) + 'Staff Kitchen')}")
     if sign_lines("06-256\nManager's Office") != ["06-256", "Manager's", "Office"]:
         failures.append("a 16-character name must wrap onto two lines")
+    if sign_lines("07-400\nUnnamed area") != ["07-400"]:
+        failures.append("a placeholder name should leave the number alone")
     long = sign_lines("10-B514\nEnvironmental Hydrology Teaching Laboratory")
     if any(len(s) > SIGN_WIDTH for s in long) or len(long) > 4:
         failures.append(f"wrap overflowed: {long}")
@@ -278,6 +364,28 @@ def self_test() -> int:
         failures.append("standable() is wrong")
     if rotation_towards((0, 1, 0), [(0, 1, 5)]) != 0 or rotation_towards((0, 1, 0), [(5, 1, 0)]) != 12:
         failures.append("rotation does not face the door")
+    # a 4x5 room (x 0..3, z 0..4) walled at x=4 with a door at z=1 facing east,
+    # corridor beyond: the door sign hangs on the corridor side, beside the door
+    occ = {}
+    for x in range(-1, 9):
+        for z in range(-1, 6):
+            occ[(x, 0, z)] = "minecraft:smooth_stone"
+            occ[(x, 4, z)] = "minecraft:smooth_stone"
+    for z in range(-1, 6):
+        for y in (1, 2, 3):
+            occ[(4, y, z)] = "minecraft:white_concrete"
+            occ[(-1, y, z)] = "minecraft:white_concrete"
+    for x in range(-1, 9):
+        for y in (1, 2, 3):
+            occ[(x, y, -1)] = occ[(x, y, 5)] = "minecraft:white_concrete"
+    occ[(4, 1, 1)] = "minecraft:oak_door[facing=east,half=lower]"
+    occ[(4, 2, 1)] = "minecraft:oak_door[facing=east,half=upper]"
+    room = flood_room(occ, (1, 1, 1))
+    if room is None or (5, 1, 1) in room or len(room) != 20:
+        failures.append(f"room flood should stop at walls and doors: {None if room is None else len(room)}")
+    ds = door_signs(occ, room or set(), ["01-101"], set())
+    if not ds or ds[0]["x"] != 5 or ds[0]["y"] != 2 or "facing=east" not in ds[0]["block"]:
+        failures.append(f"door sign misplaced: {ds}")
     if failures:
         print("self-test FAILED")
         for f in failures:
@@ -295,6 +403,7 @@ def main() -> None:
     ap.add_argument("plans", nargs="?", help="directory of openindoormaps visitor plans (*.json.gz)")
     ap.add_argument("--out", help="signs JSON (default: <world>/signs.json)")
     ap.add_argument("--max-rms", type=float, default=2.0, help="refuse a fit worse than this many blocks")
+    ap.add_argument("--no-door-signs", action="store_true", help="floor signs only")
     ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
     if a.self_test:
@@ -305,7 +414,8 @@ def main() -> None:
     plan_doors, labels = load_plans(Path(a.plans))
     placed = load_placed_doors(world, Path(a.ifc))
     occ = load_blocks(world)
-    signs, stats = build_signs(occ, plan_doors, placed, labels, a.max_rms)
+    signs, stats = build_signs(occ, plan_doors, placed, labels, a.max_rms,
+                                with_doors=not a.no_door_signs)
     out = Path(a.out) if a.out else world / "signs.json"
     out.write_text(json.dumps(signs, indent=0), encoding="utf-8")
     (out.with_suffix(".stats.json")).write_text(json.dumps(stats, indent=2), encoding="utf-8")
