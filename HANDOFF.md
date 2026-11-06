@@ -285,6 +285,7 @@ Every one of these was a number first, and looking changed two of them:
 | `docs/confirm_left_behind.png` | the hull leaves whole categories behind | walls and curtain panels that stayed put and now cross the rooms that moved (REVITER §2g) |
 | `docs/confirm_elastic_seam.png` | making the seam elastic does not save the joins | 169,116 touching pairs scored under rigid and five band widths, against the grid share rectification exists for (REVITER §2j) |
 | `docs/confirm_elastic_plan.png` | and the drawing says so without the numbers | level 694 as recovered, rectified rigidly, and with a 5 m elastic band — corridors smeared into ribbons |
+| `docs/confirm_playable_map.png` | the export is a map you can walk into | minecraft-web-client, first person: the entrance spawn facing its door, four room signs (06-270 Kitchen, 04-329 Rotunda, 07-150, 10-B514 Hydrology Lab) and a corridor with the unified floor |
 | `docs/confirm_contact_claim.png` | the contact claim clears the hull edge and moves the boundary | 638 findings against 580, by distance from the hull edge and by category — one decode, ONE wings file, one flag apart (`--no-contact`) |
 
 `make confirm WORLD=out/unbc_1m` regenerates the voxel ones from a build. The
@@ -330,6 +331,69 @@ export and footprints out of the tessellation from the recovery. The
 per-wing detail; `docs/confirm_rectify_both_decoders.png` is the two
 rectified plans side by side.
 
+## Playable in Java Edition, with room names (2026-11)
+
+The world now opens in vanilla Java Edition as a map, not only in the web
+client, and it says where you are. Three changes, each checked first-person
+in minecraft-web-client and by `verify_save.js`:
+
+```sh
+make p1            # build (engine change below included)
+make signs         # room signs from ../openindoormaps/public/data/unbc-plans
+make world         # Anvil save + zip, verified; `make snapshot` updates Pages
+```
+
+**The save was not a vanilla map.** `level.dat` had no `WorldGenSettings`,
+and the ground only covered the footprint plus 4 blocks, so the rest of
+every edge chunk was empty down to y=-64. Vanilla never regenerates a chunk
+saved `Status: full`, so those columns are holes to the void, permanently:
+**96,000 columns** in the previous committed snapshot. `export_anvil.js`
+now fills every column of every saved chunk (bedrock, stone, dirt, grass)
+and writes a flat generator with the same layers, so the terrain past the
+save meets it at the same height. It also writes gamerules for a static map
+(no mobs, daylight cycle, weather, fire spread or griefing; keepInventory;
+spawnRadius 0) and spawns the player on the ground at the widest exterior
+door with terrain in front of it, facing it, instead of on the roof.
+`verify_save.js` fails a world with void columns or without world-gen
+settings, so the old snapshot now fails it.
+
+**Rooms have names.** The IFC has no `IfcSpace`, but openindoormaps
+publishes the UNBC visitor plans with 1,391 room labels. `room_signs.py`
+joins the frames through the doors: the plans carry each door's Revit
+element id as `nativeElementId`, the IFC carries it as `IfcDoor.Tag`, and
+`doors.csv` says where each IfcDoor landed. **1,791 doors pair up; the
+fitted affine map puts them within 0.52 blocks RMS at a scale of 1.000
+blocks per metre**, which is the check that the frames really agree (the
+script refuses a fit worse than 2 blocks). Each level's height comes from
+its own doors. 1,356 waxed standing signs are placed on floors at their
+labels, facing the nearest door; 34 corridor labels are skipped on purpose
+and one label has no floor under it. Signs have no collision box, so no
+corridor narrows.
+
+*Trap:* prismarine-chunk's `loadBlockEntities` keys entities by `x >> 4`
+(the chunk index) instead of `x & 15`, so reading the save back through
+it collapsed 1,356 signs to 353. The write was right. `verify_save.js`
+counts block entities from the raw region NBT for that reason.
+
+**Floors were speckled with wall concrete.** Walls are modelled from the
+slab bottom and outrank the floor class, so 17% of all standing surfaces
+(5,578 cells) and as many ceiling cells were white concrete in a smooth-stone
+floor. First person, that is the most visible flaw in the building.
+`unify_plate_surfaces` recolours a wall/column cell that shows as a surface
+(air above or below) when at least two of its four neighbours are plate
+blocks. A wall run, its lintels and parapets keep their wall block. It
+recoloured 17,900 cells and changes **material only**: 177,288 blocks
+before and after, reachability identical (33,506 / 36,032), door, fence and
+stair QA identical. Wall concrete on walking surfaces went from 5,578 to
+2,914.
+
+**Seen but not fixed: floor holes to bare ground.** First person, a
+kitchen on level 06 has a hole in its slab with world grass 3 blocks below.
+Measured: 187 indoor floor-edge cells drop straight to the world ground
+with nothing under them, and 560 drop 3 or more blocks. That is backlog
+item 2 (real terrain): earth under the lowest storey, following the
+building's underside, would turn these into 1-block steps.
+
 ## After ANY engine change, run this
 
 ```sh
@@ -338,6 +402,7 @@ rectified plans side by side.
 .venv/bin/python scripts/verify_blocks.py out/unbc_1m        # door/fence/stair QA
 .venv/bin/python scripts/audit_walkability.py out/unbc_1m/blocks.csv   # per-well climb + reachability
 renderers/mcweb/run.sh export out/unbc_1m/blocks.csv /tmp/w && node renderers/mcweb/verify_save.js /tmp/w
+# or, signs included: make signs && make world
 ```
 
 Several past bugs passed the metric that shared their own wrong
@@ -470,13 +535,17 @@ level is 87–98%.
 2. **Real terrain** (aprons are a v1): stamp a continuous ground
    surface by interpolating heights from all ground-door sills and the
    building underside, instead of per-door cones. Also fixes
-   BlockCraft's floating corners (its flat world starts at a fixed y).
+   BlockCraft's floating corners (its flat world starts at a fixed y),
+   and the 187 indoor floor-edge cells that drop straight to bare world
+   ground (see "Playable in Java Edition"). The export's flat world-gen
+   layers must keep matching whatever ground this writes.
 3. **Rectify Phase 3** (see RECTIFY.md): per-storey wall-graph
    schematization with parametric opening replay. Research-grade;
    PRIOR_ART found no prior art — publishable.
-4. **Light fixtures from IFC**: `light_ceilings` uses a blind 6 m grid;
-   the model may carry `IfcLightFixture`/`IfcFlowTerminal` instances
-   whose positions would place lanterns where the real lights are.
+4. **Light fixtures from IFC**: `light_ceilings` uses a blind 6 m grid.
+   Checked: this export has **no** `IfcLightFixture`, `IfcFlowTerminal`,
+   `IfcSpace` or `IfcTransportElement` at all, so lights and elevators
+   need another source (the RVT through Reviter, or the plans).
 5. **Elevators**: `IfcTransportElement` currently voxelizes as "other"
    (solid). Map shafts to open cavities with ladders (or vine/water
    columns) between storey doors.
