@@ -1896,6 +1896,69 @@ def light_ceilings(winner, grid, spacing=6):
     return lit
 
 
+def unify_plate_surfaces(winner, grid, rounds=3):
+    """Give floor and ceiling surfaces one material where walls poke into them.
+
+    Walls and columns are modelled from the bottom of the slab, and at 1 m
+    they outrank the floor class (CLASS_PRIORITY), so the top layer of every
+    floor plate is speckled with wall concrete wherever a wall foot, a
+    threshold or a column base lands in it -- 17% of all standing surfaces
+    on UNBC, and the same again on the ceilings. In first person that reads
+    as a patchwork floor, not as walls.
+
+    A wall/structure cell is a SURFACE cell when the cell above it (a floor)
+    or below it (a ceiling) is empty. It is recoloured to the plate's own
+    block when at least two of its four horizontal neighbours already carry
+    a plate block (floor or roof) -- so a wall run's lintel or a parapet,
+    whose neighbours along the run are wall, keeps its wall. Repeated a few
+    rounds so a two-cell-wide patch fills from its edges.
+
+    Changes material only, never occupancy: no cell is added or removed,
+    so walkability, doors and stairs cannot change. Returns cells recoloured.
+    """
+    X, plane = grid["X"], grid["plane"]
+    patchy = {CLASS_BLOCKS["wall"], CLASS_BLOCKS["structure"]}
+    plate = {CLASS_BLOCKS["floor"]: "floor", CLASS_BLOCKS["roof"]: "roof"}
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    def unkey(k):
+        z = k // plane
+        rem = k - z * plane
+        return rem - (rem // X) * X, rem // X, z
+
+    def in_bounds(x, y):
+        # packed keys wrap out-of-range x/y onto real cells (LESSONS S13)
+        return 0 <= x < X and 0 <= y < grid["plane"] // X
+
+    total = 0
+    for _ in range(rounds):
+        changes = {}
+        for k, w in winner.items():
+            if w[1] not in patchy:
+                continue
+            x, y, z = unkey(k)
+            if key(x, y, z + 1) in winner and (z == 0 or key(x, y, z - 1) in winner):
+                continue   # buried: not a surface anyone sees
+            votes = Counter()
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if not in_bounds(nx, ny):
+                    continue
+                n = winner.get(key(nx, ny, z))
+                if n is not None and n[1] in plate:
+                    votes[n[1]] += 1
+            if sum(votes.values()) >= 2:
+                block = votes.most_common(1)[0][0]
+                changes[k] = (CLASS_PRIORITY.index(plate[block]), block)
+        if not changes:
+            break
+        winner.update(changes)
+        total += len(changes)
+    return total
+
+
 def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
     """Phase-2 rectification: reconnect walkable islands with short corridors.
 
@@ -2445,6 +2508,28 @@ def self_test() -> int:
     if len(mf) != 1 or np.allclose(mv, inner):
         failures.append("an element wholly inside a wing should move whole, unsubdivided")
 
+    # Surface unification: a slab at z=2 with a wall foot speckled into its top
+    # surface, and a wall run (x=5..9, y=10) standing on the slab with a lintel
+    # cell over an opening. The speckle takes the floor's block; the wall run,
+    # the lintel and every cell's occupancy stay exactly as they were.
+    wall = (CLASS_PRIORITY.index("wall"), CLASS_BLOCKS["wall"])
+    plate_world = {key(x, y, 2): floor for x in range(2, 12) for y in range(2, 12)}
+    plate_world[key(4, 4, 2)] = wall                       # speckle in the floor
+    for x in range(5, 10):
+        for z in (3, 4, 5):
+            if not (x == 7 and z in (3, 4)):               # an opening under a lintel
+                plate_world[key(x, 10, z)] = wall
+    before_keys = set(plate_world)
+    unify_plate_surfaces(plate_world, grid)
+    if plate_world[key(4, 4, 2)][1] != CLASS_BLOCKS["floor"]:
+        failures.append("a wall cell speckled into a floor surface should take the floor block")
+    if plate_world[key(7, 10, 5)][1] != CLASS_BLOCKS["wall"]:
+        failures.append("a lintel in a wall run must keep its wall block")
+    if any(plate_world[key(x, 10, 4)][1] != CLASS_BLOCKS["wall"] for x in (5, 6, 8, 9)):
+        failures.append("a wall standing on the slab must keep its wall block")
+    if set(plate_world) != before_keys:
+        failures.append("surface unification must never add or remove a cell")
+
     if failures:
         print("self-test FAILED")
         for line in failures:
@@ -2569,6 +2654,8 @@ def main() -> None:
     print(f"Capped {capped} interior cells that were open to the sky", flush=True)
     lanterns = light_ceilings(winner, grid)
     print(f"Recessed {lanterns} ceiling sea lanterns for interior light", flush=True)
+    surfaces_unified = unify_plate_surfaces(winner, grid)
+    print(f"Unified {surfaces_unified} wall-speckled floor/ceiling surface cells", flush=True)
     if args.floor_slabs:
         slabs_converted = refine_floor_slabs(winner, grid)
         print(f"Refined {slabs_converted} thin floor cubes -> slabs", flush=True)
@@ -2623,6 +2710,7 @@ def main() -> None:
         "envelope_capped": capped,
         "doors_grounded": doors_grounded,
         "ceiling_lanterns": lanterns,
+        "surfaces_unified": surfaces_unified,
         "seam_corridors": seams_built,
         "seam_wall_cells": seam_walls,
         "slabs_converted": slabs_converted,
