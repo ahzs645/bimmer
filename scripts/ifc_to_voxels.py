@@ -2071,6 +2071,235 @@ def stamp_terrain(winner, grid, slope_tol_m=2.0, lowest_radius_m=5.0):
     return cols_filled, placed, {"door_anchors": doors, "grade_columns": int(on_grade.sum()),
                                  "solver_converged": info == 0}
 
+def link_flight_tops(winner, grid, reach_m=3.0):
+    """Give every dead-ended flight a way off at the top.
+
+    A flight that climbs and then meets nothing is the most visible stair
+    defect left: the rebuilt run reaches the storey's height inside its
+    shaft, and the landing it should step onto is on the far side of the
+    shaft wall, or one block higher than the last tread. Walking the world
+    found 5 of 37 such flights at 1 m and 32 of 99 at 0.5 m.
+
+    For each stand cell on a top tread with no way off it (no standable
+    non-stair neighbour a player can move to), look along the 8 directions,
+    up to `reach_m`, for standable floor at the same height, one below or
+    one above. Carve the shortest such passage two cells high through
+    wall/glass/frame/structure (never a door, never inside a stair's
+    climbing envelope), pad a floor where there is none, and put an oriented
+    stair at the far end when the floor is one up. Returns flights linked.
+    """
+    X, plane, pitch = grid["X"], grid["plane"], grid["pitch"]
+    Y = plane // X
+    R = max(2, int(round(reach_m / pitch)))
+    stair_base = STAIR_SHAPED.split("[")[0]
+    stair_family = (STAIR_CUBE, stair_base)
+    carveable = {CLASS_BLOCKS[c] for c in
+                 ("wall", "floor", "structure", "roof", "frame", "glass", "other")}
+    floor_prio = CLASS_PRIORITY.index("floor")
+    stair_prio = CLASS_PRIORITY.index("stair")
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    def inb(x, y, z):
+        return 0 <= x < X and 0 <= y < Y and z >= 1
+
+    def block(x, y, z):
+        if not inb(x, y, z) and not (0 <= x < X and 0 <= y < Y):
+            return None
+        w = winner.get(key(x, y, z))
+        return None if w is None else w[1]
+
+    def base(b):
+        return None if b is None else b.split("[")[0]
+
+    def passable(x, y, z):
+        b = block(x, y, z)
+        return b is None or "_door" in b
+
+    def standable(x, y, z):
+        if not inb(x, y, z):
+            return False
+        b = block(x, y, z - 1)
+        return (b is not None and "_door" not in b and "_fence" not in b
+                and passable(x, y, z) and passable(x, y, z + 1))
+
+    def on_stair(x, y, z):
+        return base(block(x, y, z - 1)) in stair_family
+
+    DIRS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx, dy) != (0, 0)]
+
+    def has_exit(x, y, z):
+        for dx, dy in DIRS:
+            for dz in (0, -1, -2, -3, 1):
+                q = (x + dx, y + dy, z + dz)
+                if not standable(*q):
+                    continue
+                if dz == 1:
+                    walk = base(block(q[0], q[1], q[2] - 1)) == stair_base
+                    if not walk and not passable(x, y, z + 2):
+                        continue
+                if not on_stair(*q):
+                    return True
+                break
+        return False
+
+    def in_stair_envelope(x, y, z):
+        return any(base(block(x, y, z - j)) in stair_family for j in (1, 2, 3))
+
+    def passage_from(tx, ty, tz):
+        """Shortest straight passage off (tx, ty, tz): (cost, ..., dz) or None."""
+        best = None
+        # straight passages only: a diagonal one-cell cut is walkable to the
+        # audit but not to a player, whose box cannot pass two blocks that
+        # meet only at a corner
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            for kstep in range(1, R + 1):
+                px, py = tx + dx * kstep, ty + dy * kstep
+                if not (0 <= px < X and 0 <= py < Y):
+                    break
+                hit = None
+                for dz in (0, -1, 1):
+                    if standable(px, py, tz + dz) and not on_stair(px, py, tz + dz):
+                        hit = dz
+                        break
+                if hit is not None:
+                    cost = kstep + (2 if hit else 0)
+                    if best is None or cost < best[0]:
+                        best = (cost, tx, ty, tz, dx, dy, kstep, hit)
+                    break
+                # this cell must be carveable to pass through it
+                ok = True
+                for h in (0, 1):
+                    bb = block(px, py, tz + h)
+                    if bb is not None and ("_door" in bb or base(bb) not in carveable):
+                        ok = False
+                    if bb is not None and in_stair_envelope(px, py, tz + h):
+                        ok = False
+                # ...without taking anyone's floor: the head cell is the slab
+                # a storey above stands on when there is room to stand on it
+                if block(px, py, tz + 1) is not None and standable(px, py, tz + 2):
+                    ok = False
+                # ...or plugging anyone's walkway with the pad laid under it:
+                # an empty cell within two of something solid below is a
+                # player's body or head room (a pad that was the head cell of
+                # a 1-wide gap cut 2,602 cells of top-floor deck off at 1 m)
+                if block(px, py, tz - 1) is None and (
+                        block(px, py, tz - 2) is not None
+                        or block(px, py, tz - 3) is not None
+                        or in_stair_envelope(px, py, tz - 1)):
+                    ok = False
+                if not ok:
+                    break
+        return best
+
+    # flights: connected runs of tread stand cells that climb at least 2
+    on_treads = set()
+    for k, (_, b) in winner.items():
+        if base(b) not in stair_family:
+            continue
+        z = k // plane
+        rem = k - z * plane
+        y, x = rem // X, rem - (rem // X) * X
+        if standable(x, y, z + 1):
+            on_treads.add((x, y, z + 1))
+    flights = []
+    left = set(on_treads)
+    while left:
+        s0 = left.pop()
+        comp, todo = [s0], [s0]
+        while todo:
+            cx, cy, cz = todo.pop()
+            for dx, dy in DIRS:
+                for dz in (-1, 0, 1):
+                    q = (cx + dx, cy + dy, cz + dz)
+                    if q in left:
+                        left.discard(q)
+                        comp.append(q)
+                        todo.append(q)
+        zs = [c[2] for c in comp]
+        if max(zs) - min(zs) >= 2:
+            flights.append(comp)
+
+    linked = 0
+    for comp in flights:
+        ztop = max(c[2] for c in comp)
+        tops = [c for c in comp if c[2] == ztop]
+        if any(has_exit(*t) for t in tops):
+            continue
+        best = None
+        for (tx, ty, tz) in sorted(tops):
+            got = passage_from(tx, ty, tz)
+            if got is not None and (best is None or got[0] < best[0]):
+                best = got
+        if best is None:
+            continue
+        _, tx, ty, tz, dx, dy, kstep, dz = best
+        for i in range(1, kstep):
+            px, py = tx + dx * i, ty + dy * i
+            for h in (0, 1):
+                winner.pop(key(px, py, tz + h), None)
+            if winner.get(key(px, py, tz - 1)) is None:
+                winner[key(px, py, tz - 1)] = (floor_prio, FLOOR_CUBE)
+        if dz == 1:
+            # a step up onto the floor: make the last carved cell a stair
+            lx, ly = tx + dx * (kstep - 1), ty + dy * (kstep - 1)
+            g = (dx if abs(dx) >= abs(dy) else 0, dy if abs(dy) > abs(dx) else 0)
+            facing = GRID_TO_FACING.get(g, "north")
+            if kstep > 1:
+                winner[key(lx, ly, tz)] = (
+                    stair_prio, f"{STAIR_SHAPED}[facing={facing},half=bottom,shape=straight]")
+                for h in (1, 2):
+                    winner.pop(key(lx, ly, tz + h), None)
+        linked += 1
+    return linked
+
+
+def cap_stacked_doors(winner, grid):
+    """Close the doorway above the door: a header, not an open transom.
+
+    A Minecraft door is two blocks tall and a player fits under two blocks at
+    any pitch, but a 2 m doorway is door_h = 4 cells at 0.5 m. The passage is
+    cut 4 cells tall and the door fills the bottom two, so every doorway had
+    a two-cell hole over it looking into the next room. Each cell of the
+    doorway above the upper half -- empty, or a stray door half -- becomes
+    the most common wall-like block beside it at that height (concrete in a
+    wall, glass in a curtain wall). Identical at 1 m, where a doorway is
+    exactly two cells. Returns cells capped.
+    """
+    X, plane = grid["X"], grid["plane"]
+    Y = plane // X
+    header_ok = {CLASS_BLOCKS[c] for c in ("wall", "glass", "frame", "structure", "other")}
+    door_h = max(2, round(2.0 / grid["pitch"]))   # the doorway the passage was cut to
+    capped = 0
+    for k, (_, b) in list(winner.items()):
+        if "_door" not in b or "half=lower" not in b:
+            continue
+        z = k // plane
+        rem = k - z * plane
+        y, x = rem // X, rem - (rem // X) * X
+        j = 2
+        while j < door_h:
+            kk = x + X * y + plane * (z + j)
+            w = winner.get(kk)
+            if w is not None and "_door" not in w[1]:
+                break                       # the wall already closes it
+            votes = Counter()
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < X and 0 <= ny < Y:
+                    n = winner.get(nx + X * ny + plane * (z + j))
+                    if n is not None and n[1] in header_ok:
+                        votes[n[1]] += 1
+            if not votes:
+                break                       # nothing beside it: not a wall opening
+            blk = votes.most_common(1)[0][0]
+            winner[kk] = (CLASS_PRIORITY.index("wall"), blk)
+            capped += 1
+            j += 1
+    return capped
+
+
 def light_ceilings(winner, grid, spacing=6):
     """Interior lighting: recess sea lanterns into ceilings on a grid.
 
@@ -2807,6 +3036,37 @@ def self_test() -> int:
     if any(key(0, y, z) in terra for y in range(Y) for z in range(12)):
         failures.append("terrain at the grid edge should sit on the flat export plane")
 
+    # A flight climbing east (x 2..6, y=5, z 1..5) inside a shaft; its top tread
+    # at (6,5,5) meets a shaft wall at x=7 with the storey floor beyond at z=5.
+    fl = {}
+    stair_b = (CLASS_PRIORITY.index("stair"), f"{STAIR_SHAPED}[facing=east,half=bottom,shape=straight]")
+    for i in range(5):
+        fl[key(2 + i, 5, 1 + i)] = stair_b
+    for x in range(8, 14):
+        for y in range(3, 8):
+            fl[key(x, y, 5)] = floor
+    for z in range(4, 9):
+        for y in range(3, 8):
+            fl[key(7, y, z)] = wall
+    fl[key(7, 6, 6)] = (CLASS_PRIORITY.index("other"), "minecraft:oak_door[facing=east,half=lower]")
+    # a 4-cell doorway (0.5 m) keeps one lower + one upper half; the rest is header
+    tg05 = dict(tg, pitch=0.5)
+    dd = {key(3, 3, 1 + j): (100, "minecraft:oak_door[facing=east,half=" +
+                              ("lower" if j == 0 else "upper") + "]") for j in range(4)}
+    for j in range(4):
+        dd[key(3, 2, 1 + j)] = dd[key(3, 4, 1 + j)] = wall
+    cap_stacked_doors(dd, tg05)
+    if ("half=lower" not in dd[key(3, 3, 1)][1] or "half=upper" not in dd[key(3, 3, 2)][1]
+            or any("_door" in dd[key(3, 3, z)][1] for z in (3, 4))
+            or dd[key(3, 3, 3)][1] != CLASS_BLOCKS["wall"]):
+        failures.append("a 4-cell doorway should keep one door and a header above it")
+
+    n_linked = link_flight_tops(fl, tg)
+    if n_linked != 1 or key(7, 5, 6) in fl or key(7, 5, 7) in fl:
+        failures.append(f"a flight topping out at a shaft wall should be cut through it ({n_linked})")
+    if key(7, 6, 6) not in fl:
+        failures.append("linking a flight must never remove a door")
+
     if failures:
         print("self-test FAILED")
         for line in failures:
@@ -2949,11 +3209,19 @@ def main() -> None:
     print(f"Capped {capped} interior cells that were open to the sky", flush=True)
     lanterns = light_ceilings(winner, grid)
     print(f"Recessed {lanterns} ceiling sea lanterns for interior light", flush=True)
+    # Last of the passes that move cells: run before it, the capping and the
+    # lighting re-decided around the new passages and the 1 m build LOST
+    # 705 reachable cells and a well; run after them it gains.
+    flights_linked = link_flight_tops(winner, grid)
+    print(f"Linked {flights_linked} dead-ended flight tops to their storey", flush=True)
     surfaces_unified = unify_plate_surfaces(winner, grid)
     print(f"Unified {surfaces_unified} wall-speckled floor/ceiling surface cells", flush=True)
     if args.floor_slabs:
         slabs_converted = refine_floor_slabs(winner, grid)
         print(f"Refined {slabs_converted} thin floor cubes -> slabs", flush=True)
+    door_headers = cap_stacked_doors(winner, grid)
+    if door_headers:
+        print(f"Capped {door_headers} stacked door cells with headers", flush=True)
     fences_connected = refine_fences(winner, grid)
     print(f"Connected {fences_connected} railing fences", flush=True)
 
@@ -3009,6 +3277,8 @@ def main() -> None:
         "terrain": terrain_info,
         "ceiling_lanterns": lanterns,
         "surfaces_unified": surfaces_unified,
+        "flights_linked": flights_linked,
+        "door_headers": door_headers,
         "seam_corridors": seams_built,
         "seam_wall_cells": seam_walls,
         "slabs_converted": slabs_converted,

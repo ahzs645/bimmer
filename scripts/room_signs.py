@@ -304,7 +304,10 @@ def build_signs(occ, plan_doors, placed, labels, max_rms=2.0, log=print, with_do
             continue
         lx, lz = to_local([lb["lon"]], [lb["lat"]], lon0, lat0)
         x, z = (np.array([lx[0], lz[0], 1.0]) @ A).round().astype(int)
-        cell = find_cell(occ, int(x), int(z), heights[lb["level"]], taken)
+        # search radius is in metres too: 2 cells at 1 m, 4 at 0.5 m
+        reach = max(2, int(round(2 * (sx + sz) / 2)))
+        cell = find_cell(occ, int(x), int(z), heights[lb["level"]], taken,
+                         radius=reach, dy=reach)
         if cell is None:
             skipped["no floor at the label"] += 1
             continue
@@ -314,7 +317,8 @@ def build_signs(occ, plan_doors, placed, labels, max_rms=2.0, log=print, with_do
                       "block": f"minecraft:oak_sign[rotation={rotation_towards(cell, doors_xyz)}]",
                       "lines": lines, "key": lb["key"]})
         if with_doors:
-            room = flood_room(occ, cell)
+            # the cap is an AREA: 600 cells is 600 m2 at 1 m but 150 m2 at 0.5 m
+            room = flood_room(occ, cell, int(ROOM_MAX_CELLS * sx * sz))
             if room is None:
                 skipped["door sign: not one room"] += 1
                 continue
