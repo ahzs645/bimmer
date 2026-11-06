@@ -2102,7 +2102,9 @@ def light_ceilings(winner, grid, spacing=6):
         # k must be a support with 2-air walking space above
         if key(x, y, z + 1) in winner or key(x, y, z + 2) in winner:
             continue
-        for j in (3, 4):
+        # the ceiling is a storey's height up: 3-4 cells at 1 m, 6-8 at 0.5 m
+        # (searching only 3-4 cells at 0.5 m placed no lanterns at all)
+        for j in range(3, max(4, int(round(4.0 / grid["pitch"]))) + 1):
             ck = key(x, y, z + j)
             w = winner.get(ck)
             if w is None:
@@ -2177,7 +2179,7 @@ def unify_plate_surfaces(winner, grid, rounds=3):
     return total
 
 
-def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
+def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60, refresh_every=8):
     """Phase-2 rectification: reconnect walkable islands with short corridors.
 
     After per-wing rotation (--rectify) the joints between a rotated wing
@@ -2264,8 +2266,9 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
                         out.append((x + dx, y + dy, z))
         return out
 
-    def bfs(starts):
-        seen = set(starts)
+    def bfs(starts, seen=None):
+        seen = set(starts) if seen is None else seen
+        seen.update(starts)
         queue = list(starts)
         while queue:
             x, y, z = queue.pop()
@@ -2281,16 +2284,13 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
     # far-from-everything island each iteration made the pass quadratic
     # once terrain aprons added many isolated grass islands
     hopeless: dict = {}
-    for _round in range(max_links + 8):   # one link per round (re-BFS between)
-        reach = bfs(seeds())
-        if not reach:
-            break
+    def find_islands():
         unreached = set()
         for k in list(winner.keys()):
             x, y, z = unkey(k)
             if (x, y, z + 1) not in reach and standable(x, y, z + 1):
                 unreached.add((x, y, z + 1))
-        islands = []
+        found = []
         left = set(unreached)
         while left:
             s = left.pop()
@@ -2304,10 +2304,32 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
                         comp.append(n)
                         queue.append(n)
             if len(comp) >= min_component:
-                islands.append(comp)
+                found.append(comp)
+        found.sort(key=len, reverse=True)
+        return found
+
+    # Walk the building once per `refresh_every` links, not once per link. Each round used to
+    # re-walk every standable cell and re-label every island from scratch to
+    # pick up the one corridor it had just carved: fine at 1 m, hours at
+    # 0.5 m with terrain (millions of stand cells, up to 68 rounds). Between
+    # refreshes the walk is extended from the cells around each new corridor,
+    # and an island any of whose cells has become reachable is dropped.
+    reach = set()
+    islands = None
+    for _round in range(max_links + 8):   # one link per round
+        if islands is not None and _round % refresh_every:
+            islands = [c for c in islands if not any(p in reach for p in c)]
+        else:
+            # Carving can also TAKE connectivity away -- a corridor popped
+            # through a cell another floor stood on -- so an incremental reach
+            # goes stale. Measured at 1 m: never refreshing lost 518 reachable
+            # cells (94% -> 93%); a full re-walk every few links does not.
+            reach = bfs(seeds())
+            if not reach:
+                break
+            islands = find_islands()
         if not islands:
             break
-        islands.sort(key=len, reverse=True)
 
         linked = False
         glass_block = CLASS_BLOCKS["glass"]
@@ -2495,6 +2517,11 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
                         "floor_pads": pads, "carved": dict(carved_kinds)})
             built += 1
             linked = True
+            # extend the walk from the new corridor's ends and its cells
+            starts = [(rx, ry, rz), (ix, iy, iz)] + [(px, py, rz) for (px, py, _, _) in cells]
+            starts = [c for c in starts if standable(*c)]
+            reach |= {c for c in starts if c in reach or c == (rx, ry, rz)}
+            bfs([c for c in starts if c in reach], seen=reach)
             # count the attempt: an island that needs a THIRD corridor is
             # one whose links carve but never connect - stop feeding it
             hopeless[sig] = hopeless.get(sig, 0) + 1
@@ -2893,7 +2920,11 @@ def main() -> None:
           f"through their hallway door, {rooms_left} remain sealed", flush=True)
     holes_filled = patch_floor_holes(winner, grid)
     print(f"Patched {holes_filled} floor-plate pothole cells", flush=True)
-    doors_grounded, terrain_cells = stamp_terrain_aprons(winner, grid)
+    # Geometric thresholds are in METRES and scale with pitch; anything about
+    # the player (headroom, step height) stays in blocks.
+    per_m = 1.0 / args.pitch
+    doors_grounded, terrain_cells = stamp_terrain_aprons(
+        winner, grid, max_door_z=int(round(9 * per_m)))
     print(f"Grounded {doors_grounded} exterior door sides with terrain aprons "
           f"({terrain_cells} grass/dirt cells)", flush=True)
     terrain_cols = terrain_cells_all = 0
@@ -2902,7 +2933,9 @@ def main() -> None:
         terrain_cols, terrain_cells_all, terrain_info = stamp_terrain(winner, grid)
         print(f"Stamped terrain under {terrain_cols} columns ({terrain_cells_all} cells; "
               f"{terrain_info})", flush=True)
-    seams_built, seam_cells, seam_log = stitch_seams(winner, grid)
+    seams_built, seam_cells, seam_log = stitch_seams(
+        winner, grid, max_span=int(round(14 * per_m)),
+        min_component=int(round(30 * per_m * per_m)))
     print(f"Stitched {seams_built} seam corridors ({seam_cells} cells)", flush=True)
     seam_walls = close_seam_walls(winner, grid, wings, seam_log)
     if wings:
