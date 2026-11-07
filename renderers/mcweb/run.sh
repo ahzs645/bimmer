@@ -37,7 +37,9 @@ case "$cmd" in
     csv="${1:?usage: run.sh export <blocks.csv> [world-dir]}"
     world="${2:-$here/world}"
     ensure_deps
-    node "$here/export_anvil.js" "$csv" --out "$world"
+    # SIGNS=path/to/signs.json adds room signs (scripts/room_signs.py)
+    node "$here/export_anvil.js" "$csv" --out "$world" --name "${WORLD_NAME:-UNBC Campus}" \
+      ${SIGNS:+--signs "$SIGNS"}
     ;;
   verify)
     world="${1:-$here/world}"

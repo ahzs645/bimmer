@@ -285,6 +285,7 @@ Every one of these was a number first, and looking changed two of them:
 | `docs/confirm_left_behind.png` | the hull leaves whole categories behind | walls and curtain panels that stayed put and now cross the rooms that moved (REVITER §2g) |
 | `docs/confirm_elastic_seam.png` | making the seam elastic does not save the joins | 169,116 touching pairs scored under rigid and five band widths, against the grid share rectification exists for (REVITER §2j) |
 | `docs/confirm_elastic_plan.png` | and the drawing says so without the numbers | level 694 as recovered, rectified rigidly, and with a 5 m elastic band — corridors smeared into ribbons |
+| `docs/confirm_playable_map.png` | the export is a map you can walk into | minecraft-web-client, first person: the entrance spawn facing its door, four room signs (06-270 Kitchen, 04-329 Rotunda, 07-150, 10-B514 Hydrology Lab) and a corridor with the unified floor |
 | `docs/confirm_contact_claim.png` | the contact claim clears the hull edge and moves the boundary | 638 findings against 580, by distance from the hull edge and by category — one decode, ONE wings file, one flag apart (`--no-contact`) |
 
 `make confirm WORLD=out/unbc_1m` regenerates the voxel ones from a build. The
@@ -330,6 +331,162 @@ export and footprints out of the tessellation from the recovery. The
 per-wing detail; `docs/confirm_rectify_both_decoders.png` is the two
 rectified plans side by side.
 
+## Playable in Java Edition, with room names (2026-11)
+
+The world now opens in vanilla Java Edition as a map, not only in the web
+client, and it says where you are. Three changes, each checked first-person
+in minecraft-web-client and by `verify_save.js`:
+
+```sh
+make p1            # build (engine change below included)
+make signs         # room signs from ../openindoormaps/public/data/unbc-plans
+make world         # Anvil save + zip, verified; `make snapshot` updates Pages
+```
+
+**The save was not a vanilla map.** `level.dat` had no `WorldGenSettings`,
+and the ground only covered the footprint plus 4 blocks, so the rest of
+every edge chunk was empty down to y=-64. Vanilla never regenerates a chunk
+saved `Status: full`, so those columns are holes to the void, permanently:
+**96,000 columns** in the previous committed snapshot. `export_anvil.js`
+now fills every column of every saved chunk (bedrock, stone, dirt, grass)
+and writes a flat generator with the same layers, so the terrain past the
+save meets it at the same height. It also writes gamerules for a static map
+(no mobs, daylight cycle, weather, fire spread or griefing; keepInventory;
+spawnRadius 0) and spawns the player on the ground at the widest exterior
+door with terrain in front of it, facing it, instead of on the roof.
+`verify_save.js` fails a world with void columns or without world-gen
+settings, so the old snapshot now fails it.
+
+**Rooms have names.** The IFC has no `IfcSpace`, but openindoormaps
+publishes the UNBC visitor plans with 1,391 room labels. `room_signs.py`
+joins the frames through the doors: the plans carry each door's Revit
+element id as `nativeElementId`, the IFC carries it as `IfcDoor.Tag`, and
+`doors.csv` says where each IfcDoor landed. **1,791 doors pair up; the
+fitted affine map puts them within 0.52 blocks RMS at a scale of 1.000
+blocks per metre**, which is the check that the frames really agree (the
+script refuses a fit worse than 2 blocks). Each level's height comes from
+its own doors. 1,356 waxed standing signs are placed on floors at their
+labels, facing the nearest door; 34 corridor labels are skipped on purpose
+and one label has no floor under it. Signs have no collision box, so no
+corridor narrows.
+
+*Trap:* prismarine-chunk's `loadBlockEntities` keys entities by `x >> 4`
+(the chunk index) instead of `x & 15`, so reading the save back through
+it collapsed 1,356 signs to 353. The write was right. `verify_save.js`
+counts block entities from the raw region NBT for that reason.
+
+**Floors were speckled with wall concrete.** Walls are modelled from the
+slab bottom and outrank the floor class, so 17% of all standing surfaces
+(5,578 cells) and as many ceiling cells were white concrete in a smooth-stone
+floor. First person, that is the most visible flaw in the building.
+`unify_plate_surfaces` recolours a wall/column cell that shows as a surface
+(air above or below) when at least two of its four neighbours are plate
+blocks. A wall run, its lintels and parapets keep their wall block. It
+recoloured 17,900 cells and changes **material only**: 177,288 blocks
+before and after, reachability identical (33,506 / 36,032), door, fence and
+stair QA identical. Wall concrete on walking surfaces went from 5,578 to
+2,914.
+
+## Terrain, stairs, door signs and the 0.5 m build (2026-11, second pass)
+
+Measured on the faithful build. "Flights" and "drops" are
+`scripts/audit_flights.py`: every connected run of tread stand cells that
+climbs >= 2 must touch walkable floor at both ends, and an indoor floor
+edge should not drop the player onto bare world ground. Run it with the
+other audits after any engine change.
+
+| 1 m | before | after |
+| --- | ---: | ---: |
+| interior reachable | 33,506 / 36,032 = 93% | **34,526 / 36,678 = 94%** |
+| stairwells not climbable | 2 / 37 | **1 / 37** |
+| flights that dead-end at the top | 10 / 41 | **4 / 37** |
+| indoor edges dropping to bare world ground | 187 | **30** |
+| door QA (orphans / stepped) | 0 / 0 | 0 / 0 |
+| signs | 1,356 | **2,224** (1,356 floor + 868 beside doors) |
+
+**Terrain (`stamp_terrain`).** Grade is read off the building: a column
+holding the lowest storey of its 5 m neighbourhood has ground right under
+it, the outside cell of each exterior door has ground at its sill, and the
+padded grid edge (16 m, `--terrain-margin`) sits on the export's flat
+plane. A Laplace solve fills everything else, and no column is ever filled
+up to its own lowest block, so earth cannot enter a room. A canopy over
+lower ground is not taken as grade, so the space under it stays open
+(self-test). Door aprons still run first, but no longer put cones under
+floors: they had been building dirt mounds inside rooms. `--no-terrain`
+turns it off.
+
+**Stairs.** Two engine bugs and one new pass:
+
+- `rebuild_blocked_stairs` merged assemblies into a well whenever their
+  boxes overlapped on both axes. A monumental stair's box (18 x 12 m,
+  29 x 16 m) overlaps any tower inside it, so the 4.4 m feature stair at
+  (38-55, 38-50) m took a tower's height and was rebuilt as a 12-rise
+  straight run into open air. Wells now merge only at plan IoU >= 0.25:
+  real pairs score 0.39-1.00, the false ones scored 0.03-0.20.
+- The rebuilt run only turned at the end of the well, so in a glazed tower
+  with a landing every 3 cells it ran 6-rise flights straight past them
+  and overshot the last one. It now also turns level with each landing
+  plate in the well.
+- `link_flight_tops` (new, last pass that moves cells): a flight whose top
+  has no way off gets a straight 2-high passage, up to 3 m, to floor at the
+  same height, one below or one above (with a stair). It never removes a
+  door, cuts a slab someone stands on, pads a cell that is somebody's
+  body or head room, or touches a stair's climbing envelope. **Every one
+  of those guards was added because the build lost reachability without
+  it**: one pad at (207,16,65) was the head room of a flight and cut
+  2,602 cells of top-floor deck off. Diagonal passages are not used: the
+  audit walks them, a player's box cannot. It links 1 flight at 1 m and 6
+  at 0.5 m; the rest need more than a short straight cut.
+
+**Door signs.** `room_signs.py` floods each labelled room's floor from its
+label (own level, never through a door, capped at 600 m2) and hangs a wall
+sign beside every door on that flood's edge, at eye height, facing out of
+the room. 774 rooms at 1 m get no door sign because the engine sealed them
+(no door survived rounding); at 0.5 m that is 506.
+
+**0.5 m.** `make p05`, or `ifc_to_voxels.py --pitch 0.5`: **8.5 minutes,
+2.76 M blocks** (1.75 M of them terrain), exported in 27 s to a 1.26 MB
+zip, committed as `renderers/mcweb/unbc_world_0p5m.zip` (not deployed:
+which one Pages serves is a product decision). What it took:
+
+- **Out of memory in voxelization.** trimesh subdivides a whole class mesh
+  before rounding a vertex. `surface_voxel_centers` voxelizes in face
+  batches; the lattice is `round(v / pitch)` and subdivision is per face,
+  so the result is identical (checked at 1, 0.5 and 0.25 m). It peaks
+  around 3 GB. *Do not run two builds at once here*: the session limit is
+  below what `free` reports, and the 0.5 m build was killed three times
+  running beside a 1 m one.
+- **The stitcher.** It re-walked every stand cell and re-labelled every
+  island for each of up to 68 links: 40+ minutes and still going. It now
+  extends the walk from each new corridor and re-walks every 8 links.
+  Never re-walking was measured too, and lost 518 reachable cells at 1 m,
+  because carving can remove a floor. 2.5 min at 0.5 m; at 1 m, 33
+  corridors and 34,524 reachable against 34,523 before.
+- **Cells that meant metres.** At 0.5 m `light_ceilings` looked 3-4 cells
+  up for a ceiling in an 8-cell storey and would have lit nothing; door
+  aprons, stitch span, island size and the room-sign search radius halved
+  too. All scale with pitch now; player-scale numbers (headroom, steps)
+  stay in blocks. Identical at 1 m.
+- **An open transom over every door.** The doorway is cut 4 cells tall and
+  a Minecraft door is 2, so every door had a 2-cell hole above it into
+  the next room. `cap_stacked_doors` closes it with the wall beside it
+  (7,070 cells).
+
+| 0.5 m | |
+| --- | ---: |
+| interior reachable | **100,355 / 103,744 = 97%** |
+| stairwells not climbable | 7 / 64 |
+| flights that dead-end at the top | 26 / 67 |
+| door QA | 0 orphans, 0 stepped; 5 sunk, 1 floating, 1 without threshold (1 m: 6 / 0 / 10) |
+| lanterns / signs | 4,729 / 2,922 |
+
+So 0.5 m is the more walkable building, with cleaner doors, and the worse
+one for stairs: the rebuild lays one rise per cell, and the landing logic
+was tuned at 1 m. That is the next thing to fix before deploying it.
+First person it also shows doors standing in open facade at the top
+storeys, sky behind them: the known "doors free-standing in glazed facades"
+class, which halving the pitch does not fix.
+
 ## After ANY engine change, run this
 
 ```sh
@@ -337,7 +494,9 @@ rectified plans side by side.
 .venv/bin/python scripts/inspect_interior.py --self-test     # pockets, holes, dog-leg climb
 .venv/bin/python scripts/verify_blocks.py out/unbc_1m        # door/fence/stair QA
 .venv/bin/python scripts/audit_walkability.py out/unbc_1m/blocks.csv   # per-well climb + reachability
+.venv/bin/python scripts/audit_flights.py out/unbc_1m/blocks.csv       # dead-ended flights, drops to bare ground
 renderers/mcweb/run.sh export out/unbc_1m/blocks.csv /tmp/w && node renderers/mcweb/verify_save.js /tmp/w
+# or, signs included: make signs && make world
 ```
 
 Several past bugs passed the metric that shared their own wrong
@@ -461,22 +620,22 @@ level is 87–98%.
 
 ## The backlog, ranked (each is a self-contained project)
 
-1. **0.5 m pitch deploy** (`make p05` already builds it): the
-   industry-standard remedy (see PRIOR_ART addendum — Recast) that
-   shrinks EVERY rounding artifact class at ~6× block count. Needs: the
-   post-passes profiled at 1M cells (they are pure Python; the
-   walkability BFS and stitcher will need either patience or numpy/
-   scipy vectorization), a heavier world.zip, slower first page load.
-2. **Real terrain** (aprons are a v1): stamp a continuous ground
-   surface by interpolating heights from all ground-door sills and the
-   building underside, instead of per-door cones. Also fixes
-   BlockCraft's floating corners (its flat world starts at a fixed y).
+1. **Stairs at 0.5 m**: 7/64 wells not climbable and 26/67 flights
+   dead-ended, against 1/37 and 4/37 at 1 m. The rebuilt runs and
+   `link_flight_tops` were developed on the 1 m build; walk the 0.5 m
+   wells (coordinates from `audit_walkability.py`) before tuning.
+   Then deploy 0.5 m: it is otherwise the better world (97% reachable).
+2. **The last dead-ended flights and the one unclimbable 1 m well** at
+   x 119-125, z 388-389 (a switchback squeezed into a 2-cell shaft whose
+   landing rounded into wall mass). Per-well work; slice it with the
+   column printer used for the ones above, it is quick to read.
 3. **Rectify Phase 3** (see RECTIFY.md): per-storey wall-graph
    schematization with parametric opening replay. Research-grade;
    PRIOR_ART found no prior art — publishable.
-4. **Light fixtures from IFC**: `light_ceilings` uses a blind 6 m grid;
-   the model may carry `IfcLightFixture`/`IfcFlowTerminal` instances
-   whose positions would place lanterns where the real lights are.
+4. **Light fixtures from IFC**: `light_ceilings` uses a blind 6 m grid.
+   Checked: this export has **no** `IfcLightFixture`, `IfcFlowTerminal`,
+   `IfcSpace` or `IfcTransportElement` at all, so lights and elevators
+   need another source (the RVT through Reviter, or the plans).
 5. **Elevators**: `IfcTransportElement` currently voxelizes as "other"
    (solid). Map shafts to open cavities with ladders (or vine/water
    columns) between storey doors.

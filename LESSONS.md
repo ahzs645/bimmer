@@ -130,7 +130,11 @@ On the GitHub Pages site (root = minecraft-web-client):
   in-browser singleplayer server (flying-squid running in the tab; no backend
   anywhere) loads the UNBC world. The FPS/debug reader is disabled via
   `setting=renderDebug:"none"`.
-- **Spawn**: on/above the central roof deck; you fall gently onto it.
+- **Spawn**: on the ground outside the widest grounded exterior door,
+  facing it (`export_anvil.js` picks it; `--spawn x,y,z,yaw` overrides).
+  Older snapshots dropped you onto the roof deck.
+- **Room signs**: ~1,350 standing signs give each room its number and name
+  (`make signs`, from the openindoormaps plans; see HANDOFF).
 - **Move**: WASD + mouse (click to capture), space jumps, double-space toggles
   fly in creative. `T` opens chat: `/tp x y z` works.
 - **Doors are real**: right-click opens/closes both halves; double doors are

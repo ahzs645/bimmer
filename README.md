@@ -56,6 +56,8 @@ table, functional doors, per-stage reference, and Minecraft import instructions.
 | `scripts/walk_physics.py` | the vanilla-Minecraft movement model, shared by everything that walks a world |
 | `scripts/walk_voxels.py` | **walk the converted world** and render what a player sees — frames, a GIF, and the route |
 | `scripts/inspect_interior.py` | sweep the whole interior: where it is cut off, where the envelope leaks, whether stairs bend |
+| `scripts/audit_flights.py` | stair flights that dead-end at the top, and indoor floor edges that drop to bare ground |
+| `scripts/room_signs.py` | room-number signs (on floors and beside doors) from the openindoormaps UNBC plans, joined to the IFC through door element ids (`make signs`) |
 | `scripts/make_fixture_building.py` | a small IFC test building with an off-grid wing, so the pipeline is testable without the 67 MB model |
 | `renderers/mcweb/` | export the building to a Java world save for the **minecraft-web-client** renderer (real doors/stairs/slabs/fences) |
 | `Makefile` | `setup` / `p1` / `p05` / `all` / `viewer` / `clean` |

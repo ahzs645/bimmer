@@ -21,7 +21,25 @@
  *
  * Usage:
  *   node export_anvil.js blocks.csv --out world [--version 1.20.4]
- *        [--base-y 4] [--no-floor] [--name "UNBC"]
+ *        [--base-y 4] [--no-floor] [--name "UNBC"] [--signs signs.json]
+ *        [--spawn X,Y,Z[,YAW]] [--gamemode creative|adventure|survival]
+ *
+ * Playable in vanilla Java Edition, not only in the web client:
+ *   - level.dat carries WorldGenSettings with a FLAT generator whose layers
+ *     match the ground written here, so terrain past the saved chunks
+ *     continues at the same height instead of whatever default generation
+ *     a missing setting falls back to.
+ *   - the ground fills EVERY column of every saved chunk (bedrock .. grass).
+ *     Vanilla never regenerates a chunk saved with Status=full, so a column
+ *     left empty in a saved chunk is a hole to the void, forever.
+ *   - gamerules for a static map: no mobs, no daylight/weather cycle, no
+ *     fire spread, no griefing, keepInventory, spawnRadius 0.
+ *   - spawn on the ground at the widest exterior door that has terrain in
+ *     front of it, facing the door (override with --spawn, in blocks.csv
+ *     coordinates). The old default dropped players onto the roof.
+ *   - --signs places waxed signs (block + block entity) from a JSON list
+ *     [{x,y,z,block,lines:[...]}] in blocks.csv coordinates; see
+ *     scripts/room_signs.py.
  */
 'use strict'
 
@@ -30,7 +48,8 @@ const path = require('path')
 const zlib = require('zlib')
 
 function parseArgs(argv) {
-  const a = { version: '1.20.4', out: 'world', baseY: 4, floor: true, name: 'bimmer' }
+  const a = { version: '1.20.4', out: 'world', baseY: 4, floor: true, name: 'bimmer',
+    signs: null, spawn: null, gamemode: 'creative' }
   const rest = []
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i]
@@ -39,6 +58,9 @@ function parseArgs(argv) {
     else if (t === '--base-y') a.baseY = parseInt(argv[++i], 10)
     else if (t === '--name') a.name = argv[++i]
     else if (t === '--no-floor') a.floor = false
+    else if (t === '--signs') a.signs = argv[++i]
+    else if (t === '--spawn') a.spawn = argv[++i].split(',').map(Number)
+    else if (t === '--gamemode') a.gamemode = argv[++i]
     else if (t.startsWith('--')) throw new Error('unknown flag ' + t)
     else rest.push(t)
   }
@@ -86,11 +108,72 @@ function readCsv(file) {
   return rows
 }
 
+const GAMEMODES = { survival: 0, creative: 1, adventure: 2 }
+
+// A static architectural map, not a survival world: nothing spawns, burns,
+// grows dark, or rains into the atrium.
+const GAMERULES = {
+  doMobSpawning: 'false', doDaylightCycle: 'false', doWeatherCycle: 'false',
+  doFireTick: 'false', mobGriefing: 'false', keepInventory: 'true',
+  doInsomnia: 'false', doPatrolSpawning: 'false', doTraderSpawning: 'false',
+  doWardenSpawning: 'false', spawnRadius: '0', announceAdvancements: 'false',
+}
+
+// The ground written under every saved column, bottom up. The same list is
+// the flat generator's layer list in level.dat, so generated chunks beyond
+// the saved ones meet it at the same height.
+function groundLayers(groundY, minY = -64) {
+  const dirt = 3
+  return [
+    { block: 'minecraft:bedrock', height: 1 },
+    { block: 'minecraft:stone', height: groundY - dirt - minY - 1 },
+    { block: 'minecraft:dirt', height: dirt },
+    { block: 'minecraft:grass_block', height: 1 },
+  ].filter((l) => l.height > 0)
+}
+
 function writeLevelDat(worldDir, opts, registry) {
   const nbt = require('prismarine-nbt')
   const dataVersion = (registry.version && registry.version.dataVersion) || 3700
   const int = (value) => ({ type: 'int', value })
   const byte = (value) => ({ type: 'byte', value })
+  const str = (value) => ({ type: 'string', value })
+  const comp = (value) => ({ type: 'compound', value })
+  const list = (type, value) => ({ type: 'list', value: { type, value } })
+  const noise = (settings, biomeSource) => comp({
+    type: str('minecraft:noise'), settings: str(settings), biome_source: comp(biomeSource) })
+  const worldGen = comp({
+    bonus_chest: byte(0),
+    generate_features: byte(0),
+    seed: { type: 'long', value: [0, 0] },
+    dimensions: comp({
+      'minecraft:overworld': comp({
+        type: str('minecraft:overworld'),
+        generator: comp({
+          type: str('minecraft:flat'),
+          settings: comp({
+            biome: str('minecraft:plains'),
+            features: byte(0),
+            lakes: byte(0),
+            structure_overrides: list('end', []),
+            layers: list('compound', opts.layers.map((l) => ({
+              block: str(l.block), height: int(l.height) }))),
+          }),
+        }),
+      }),
+      'minecraft:the_nether': comp({
+        type: str('minecraft:the_nether'),
+        generator: noise('minecraft:nether', {
+          type: str('minecraft:multi_noise'), preset: str('minecraft:nether') }),
+      }),
+      'minecraft:the_end': comp({
+        type: str('minecraft:the_end'),
+        generator: noise('minecraft:end', { type: str('minecraft:the_end') }),
+      }),
+    }),
+  })
+  const gameRules = comp(Object.fromEntries(
+    Object.entries(GAMERULES).map(([k, v]) => [k, str(v)])))
   const data = {
     type: 'compound',
     name: '',
@@ -112,25 +195,80 @@ function writeLevelDat(worldDir, opts, registry) {
             },
           },
           LevelName: { type: 'string', value: opts.name },
-          GameType: int(1), // creative
+          GameType: int(GAMEMODES[opts.gamemode] ?? 1),
           allowCommands: byte(1),
           Difficulty: byte(1),
-          SpawnX: int(opts.spawn[0]),
-          SpawnY: int(opts.spawn[1]),
-          SpawnZ: int(opts.spawn[2]),
+          SpawnX: int(Math.floor(opts.spawn[0])),
+          SpawnY: int(Math.floor(opts.spawn[1])),
+          SpawnZ: int(Math.floor(opts.spawn[2])),
+          SpawnAngle: { type: 'float', value: opts.spawnAngle || 0 },
+          WorldGenSettings: worldGen,
+          GameRules: gameRules,
+          DataPacks: comp({ Enabled: list('string', ['vanilla']), Disabled: list('end', []) }),
+          WasModded: byte(0),
           Time: { type: 'long', value: [0, 0] },
           DayTime: { type: 'long', value: [0, 6000] }, // midday
           raining: byte(0),
           thundering: byte(0),
           hardcore: byte(0),
           initialized: byte(1),
+          // pre-1.16 readers (and the web client's flying-squid) key on these
           generatorName: { type: 'string', value: 'flat' },
+          generatorVersion: int(0),
         },
       },
     },
   }
   const buf = nbt.writeUncompressed(data, 'big')
   fs.writeFileSync(path.join(worldDir, 'level.dat'), zlib.gzipSync(buf))
+}
+
+// The widest exterior door whose outside is open ground: where a
+// visitor would walk in. Returns blocks.csv coords of the standing cell in
+// front of it plus the yaw (vanilla degrees, 0 = +Z) that faces the door.
+function findEntrance(rows) {
+  const at = new Map()
+  for (const r of rows) at.set(r.x + ',' + r.y + ',' + r.z, r.block)
+  const get = (x, y, z) => at.get(x + ',' + y + ',' + z)
+  const isGround = (b) => b && /grass_block|dirt/.test(b)
+  const step = { north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] }
+  const doors = rows.filter((r) => /_door\[/.test(r.block) && /half=lower/.test(r.block))
+  const cands = []
+  for (const d of doors) {
+    const facing = (d.block.match(/facing=(\w+)/) || [])[1]
+    if (!step[facing]) continue
+    const [fx, fz] = step[facing]
+    for (const sgn of [1, -1]) {
+      for (let k = 2; k <= 3; k++) {
+        const x = d.x + sgn * fx * k, z = d.z + sgn * fz * k
+        if (get(x, d.y, z) || get(x, d.y + 1, z)) continue
+        if (!isGround(get(x, d.y - 1, z))) continue
+        // outdoors: terrain also runs UNDER the building, so earth below a
+        // cell no longer means the cell is outside -- open sky above does
+        let roofed = false
+        for (let j = 2; j < 24 && !roofed; j++) roofed = !!get(x, d.y + j, z)
+        if (roofed) continue
+        // the door's run: same-facing lower halves side by side
+        let leaves = 1
+        for (const s of [1, -1]) {
+          for (let i = 1; i < 6; i++) {
+            const b = get(d.x + s * fz * i, d.y, d.z + s * fx * i)
+            if (b && b.includes('facing=' + facing) && b.includes('half=lower')) leaves++
+            else break
+          }
+        }
+        // vanilla yaw: 0 faces +Z, 90 faces -X, 180 faces -Z, 270 faces +X
+        const dx = d.x - x, dz = d.z - z
+        const yaw = ((Math.atan2(-dx, dz) * 180) / Math.PI + 360) % 360
+        cands.push({ x: x + 0.5, y: d.y, z: z + 0.5, yaw, leaves, door: [d.x, d.y, d.z] })
+        break
+      }
+    }
+  }
+  if (!cands.length) return null
+  // widest run first; then the lowest sill (ground floor); then a stable order
+  cands.sort((a, b) => b.leaves - a.leaves || a.y - b.y || a.door[0] - b.door[0] || a.door[2] - b.door[2])
+  return cands[0]
 }
 
 async function main() {
@@ -179,23 +317,6 @@ async function main() {
     chunkAt(cx, cz).setBlock({ x: x & 15, y, z: z & 15 }, block)
   }
 
-  // optional flat grass ground one below the building, spanning the footprint (+margin)
-  let floorCount = 0
-  if (opts.floor) {
-    const groundY = opts.baseY - 1
-    const grass = makeBlock('minecraft:grass_block')
-    const dirt = makeBlock('minecraft:dirt')
-    const margin = 4
-    for (let x = -margin; x <= (maxX - minX) + margin; x++) {
-      for (let z = -margin; z <= (maxZ - minZ) + margin; z++) {
-        setWorld(x, groundY, z, grass)
-        setWorld(x, groundY - 1, z, dirt)
-        setWorld(x, groundY - 2, z, dirt)
-        floorCount++
-      }
-    }
-  }
-
   let placed = 0, unknown = 0
   const unknownNames = new Set()
   const counts = new Map()
@@ -209,9 +330,70 @@ async function main() {
     counts.set(base, (counts.get(base) || 0) + 1)
   }
 
-  // centre spawn just above the building's roof (clamped under the world height)
-  const buildTop = opts.baseY + (maxY - minY)
-  opts.spawn = [Math.floor((maxX - minX) / 2), Math.min(buildTop + 6, 315), Math.floor((maxZ - minZ) / 2)]
+  // Signs: a block plus its block entity. Waxed, so a player cannot edit
+  // the room labels by right-clicking them.
+  let signsPlaced = 0
+  if (opts.signs) {
+    const text = (t) => ({ type: 'string', value: JSON.stringify({ text: t }) })
+    const face = (lines) => ({ type: 'compound', value: {
+      messages: { type: 'list', value: { type: 'string',
+        value: [0, 1, 2, 3].map((i) => text(lines[i] || '')).map((t) => t.value) } },
+      color: { type: 'string', value: 'black' },
+      has_glowing_text: { type: 'byte', value: 0 },
+    } })
+    for (const sg of JSON.parse(fs.readFileSync(opts.signs, 'utf8'))) {
+      const r = shift(sg)
+      const b = makeBlock(sg.block)
+      if (!b) { unknown++; unknownNames.add(parseState(sg.block).name); continue }
+      setWorld(r.x, r.y, r.z, b)
+      chunkAt(r.x >> 4, r.z >> 4).setBlockEntity({ x: r.x & 15, y: r.y, z: r.z & 15 }, {
+        id: { type: 'string', value: 'minecraft:sign' },
+        x: { type: 'int', value: r.x }, y: { type: 'int', value: r.y }, z: { type: 'int', value: r.z },
+        is_waxed: { type: 'byte', value: 1 },
+        front_text: face(sg.lines), back_text: face(sg.lines),
+      })
+      signsPlaced++
+    }
+  }
+
+  // Ground: every column of every saved chunk, plus a margin of chunks
+  // around the footprint, layered exactly as the flat generator in level.dat.
+  const groundY = opts.baseY - 1
+  opts.layers = groundLayers(groundY)
+  let floorCount = 0
+  if (opts.floor) {
+    const margin = 16
+    for (let cx = (-margin) >> 4; cx <= ((maxX - minX) + margin) >> 4; cx++) {
+      for (let cz = (-margin) >> 4; cz <= ((maxZ - minZ) + margin) >> 4; cz++) chunkAt(cx, cz)
+    }
+    const column = []
+    let y = -64
+    for (const l of opts.layers) for (let i = 0; i < l.height; i++) column.push([y++, makeBlock(l.block)])
+    for (const c of chunks.values()) {
+      for (let x = 0; x < 16; x++) {
+        for (let z = 0; z < 16; z++) {
+          for (const [yy, b] of column) c.setBlock({ x, y: yy, z }, b)
+          floorCount++
+        }
+      }
+    }
+  }
+
+  // Spawn: on the ground in front of the main entrance, facing it.
+  const entrance = opts.spawn ? null : findEntrance(rows)
+  if (opts.spawn) {
+    const s = shift({ x: opts.spawn[0], y: opts.spawn[1], z: opts.spawn[2] })
+    opts.spawnAngle = opts.spawn.length > 3 ? opts.spawn[3] : 0
+    opts.spawn = [s.x, s.y, s.z]
+  } else if (entrance) {
+    const s = shift(entrance)
+    opts.spawn = [s.x, s.y, s.z]
+    opts.spawnAngle = entrance.yaw
+  } else {
+    // no grounded exterior door: fall back to just above the roof
+    const buildTop = opts.baseY + (maxY - minY)
+    opts.spawn = [Math.floor((maxX - minX) / 2), Math.min(buildTop + 6, 315), Math.floor((maxZ - minZ) / 2)]
+  }
 
   const worldDir = path.resolve(opts.out)
   fs.mkdirSync(path.join(worldDir, 'region'), { recursive: true })
@@ -230,6 +412,11 @@ async function main() {
     blocks_placed: placed,
     floor_blocks: floorCount,
     chunks: chunks.size,
+    signs_placed: signsPlaced,
+    ground_layers: opts.layers,
+    spawn_angle: opts.spawnAngle || 0,
+    spawn_entrance: entrance,
+    gamemode: opts.gamemode,
     unknown_blocks: unknown,
     unknown_names: [...unknownNames].sort(),
     spawn: opts.spawn,

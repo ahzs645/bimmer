@@ -12,10 +12,13 @@ PY    := .venv/bin/python
 # Which pipeline output the renderer dev servers load (run 'make p1' first).
 WORLD ?= out/unbc_1m
 MCWEB_WORLD ?= $(WORLD)
+# openindoormaps' published UNBC visitor plans: the room labels for `make signs`
+# (clone https://github.com/ahzs645/openindoormaps next to this repo).
+PLANS ?= ../openindoormaps/public/data/unbc-plans
 
 .PHONY: help setup parser-setup parser-check contract rectify-preview \
         fixture fixture-recovery walk inspect confirm selftest rectify-plan p1 p05 all voxels rvt \
-        viewer mcweb blockcraft blockcraft-static blockcraft-stop clean
+        signs world snapshot viewer mcweb blockcraft blockcraft-static blockcraft-stop clean
 
 help:
 	@echo "Pipeline:"
@@ -40,6 +43,11 @@ help:
 	@echo "  make inspect           sweep the interior: cut-off pockets, leaks, stairs"
 	@echo "  make confirm           first-person frames for what inspect claims"
 	@echo "  make selftest          every engine self-test, no model needed"
+	@echo ""
+	@echo "Playable Java Edition map (from WORLD=$(WORLD)):"
+	@echo "  make signs             room-number signs from openindoormaps labels (PLANS=...)"
+	@echo "  make world             Anvil save + zip, signs included if made; verified"
+	@echo "  make snapshot          copy that zip over the committed Pages deploy input"
 	@echo ""
 	@echo "Renderer dev servers (all load WORLD=$(WORLD); override with WORLD=out/unbc_0p5m):"
 	@echo "  make viewer            Three.js inspection viewer      http://127.0.0.1:8765/"
@@ -126,6 +134,7 @@ selftest:
 	$(PY) scripts/preview_rectify.py --self-test
 	$(PY) scripts/check_ifc_contract.py --self-test
 	$(PY) scripts/rvt_to_ifc.py --self-test
+	$(PY) scripts/room_signs.py --self-test
 
 # The same wing transforms, drawn by the PARSER's floor viewer instead of by
 # the stick diagram here: real wall poche, door swings, stair arrows. Reads the
@@ -161,9 +170,24 @@ viewer:
 # Export MCWEB_WORLD's blocks.csv to an Anvil save and launch the local
 # minecraft-web-client (real vanilla block models: doors/stairs/slabs/fences).
 # serve_client.sh clones + wires up the client and auto-loads the world.
-mcweb:
-	renderers/mcweb/run.sh export "$(MCWEB_WORLD)/blocks.csv" "$(MCWEB_WORLD)/world"
+# Room signs: the IFC has no rooms, the openindoormaps plans have ~1,400
+# labelled ones, and the doors join the two frames (scripts/room_signs.py).
+signs:
+	$(PY) scripts/room_signs.py "$(WORLD)" "$(IFC)" "$(PLANS)" --out "$(WORLD)/signs.json"
+
+# A world a player can unzip into .minecraft/saves: flat world-gen matching the
+# ground, gamerules for a static map, entrance spawn, and signs when present.
+world:
+	SIGNS="$(wildcard $(MCWEB_WORLD)/signs.json)" renderers/mcweb/run.sh export \
+	  "$(MCWEB_WORLD)/blocks.csv" "$(MCWEB_WORLD)/world"
+	renderers/mcweb/run.sh verify "$(MCWEB_WORLD)/world"
 	renderers/mcweb/run.sh pack "$(MCWEB_WORLD)/world"
+
+# The Pages site deploys the COMMITTED snapshot (CI never sees the IFC).
+snapshot: world
+	cp "$(MCWEB_WORLD)/world.zip" renderers/mcweb/unbc_world.zip
+
+mcweb: world
 	renderers/mcweb/serve_client.sh "$(MCWEB_WORLD)/world.zip"
 
 # BlockCraft (cube-engine fallback renderer). Both targets regenerate the

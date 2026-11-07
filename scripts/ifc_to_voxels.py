@@ -336,16 +336,58 @@ def extract(model, threads: int, spiral_mode: str = "synth", wings=None,
     return meshes, door_meshes, spirals, stair_groups, stats
 
 
-def voxelize_solids(meshes, door_verts, pitch, fill):
+def surface_voxel_centers(mesh, pitch, max_tris=4_000_000):
+    """Surface voxel centres of `mesh`, voxelized in batches of faces.
+
+    trimesh subdivides the WHOLE mesh until every edge is under pitch/2 before
+    it rounds a single vertex, so memory grows with surface area / pitch^2:
+    ~4 GB for the UNBC walls at 1 m and out of memory at 0.5 m. Subdivision is
+    per face and the lattice is round(v / pitch), anchored at the world
+    origin, so voxelizing the faces in batches and taking the union gives
+    exactly the voxels the one-shot call gives -- with the peak bounded by a
+    batch. Batches are cut by estimated subdivided triangle count.
+    """
+    faces = np.asarray(mesh.faces)
+    if len(faces) == 0:
+        return np.zeros((0, 3))
+    tri_area = np.asarray(mesh.area_faces)
+    est = 1 + tri_area / (0.5 * (pitch / 2.0) ** 2)      # triangles after subdivision
+    out, start, run = [], 0, 0.0
+    bounds = []
+    for i, e in enumerate(est):
+        if run + e > max_tris and i > start:
+            bounds.append((start, i))
+            start, run = i, 0.0
+        run += e
+    bounds.append((start, len(faces)))
+    for a, b in bounds:
+        sub = trimesh.Trimesh(vertices=mesh.vertices, faces=faces[a:b], process=False)
+        sub.remove_unreferenced_vertices()
+        pts = np.asarray(sub.voxelized(pitch=pitch).points, dtype=np.float64)
+        if pts.size:
+            out.append(np.round(pts / pitch).astype(np.int64))
+    if not out:
+        return np.zeros((0, 3))
+    return np.unique(np.concatenate(out), axis=0).astype(np.float64) * pitch
+
+
+def voxelize_solids(meshes, door_verts, pitch, fill, margin_m=0.0):
     """Voxelize each class on a shared mesh-index grid; resolve overlaps by priority.
 
     Returns winner: packed_key -> (priority_index, block_id), plus grid params.
     The grid origin includes door bounds so doors align to the same lattice.
+    `margin_m` pads the plan (x, y) by that much on every side: room for
+    terrain to slope away from the building instead of stopping at its
+    bounding box. Empty margin costs nothing -- unpack_and_write trims to
+    what is occupied.
     """
     mins = [m.bounds[0] for m in meshes.values()] + [d["verts"].min(axis=0) for d in door_verts]
     maxs = [m.bounds[1] for m in meshes.values()] + [d["verts"].max(axis=0) for d in door_verts]
     all_min = np.array(mins).min(axis=0)
     all_max = np.array(maxs).max(axis=0)
+    pad = int(round(margin_m / pitch))
+    all_min[:2] -= pad * pitch
+    all_max[:2] += pad * pitch
 
     dims = np.ceil((all_max - all_min) / pitch).astype(np.int64) + 3
     X, Y, Z = int(dims[0]), int(dims[1]), int(dims[2])
@@ -356,13 +398,15 @@ def voxelize_solids(meshes, door_verts, pitch, fill):
     per_class_voxels: dict[str, int] = {}
 
     for cls, mesh in meshes.items():
-        vg = mesh.voxelized(pitch=pitch)
         if fill:
+            vg = mesh.voxelized(pitch=pitch)
             try:
                 vg = vg.fill()
             except Exception:
                 pass
-        centers = np.asarray(vg.points, dtype=np.float64)
+            centers = np.asarray(vg.points, dtype=np.float64)
+        else:
+            centers = surface_voxel_centers(mesh, pitch)
         if centers.size == 0:
             per_class_voxels[cls] = 0
             continue
@@ -979,12 +1023,26 @@ def rebuild_blocked_stairs(winner, grid, stair_groups):
     # not enough: entrance steps and ramps that touch a stair tower's box
     # edge-on would chain into one long "well", and the synthesized run would
     # march across the whole facade instead of switchbacking inside the tower.
-    def same_well(lo_a, hi_a, lo_b, hi_b):
+    #
+    # Overlap along each axis is still not enough on its own: a monumental
+    # stair's footprint is so large (18 x 12 m, 29 x 16 m on UNBC) that any
+    # stair tower standing inside its box overlaps it on both axes, and the
+    # merged "well" then took the TOWER's height. The 4.4 m feature stair was
+    # rebuilt as a 12-rise straight run into open air. Real same-well pairs --
+    # scissor twins, stacked tower storeys -- share their footprint (plan IoU
+    # 0.39-1.00 on UNBC); those false merges scored 0.03-0.20.
+    def same_well(lo_a, hi_a, lo_b, hi_b, min_iou=0.25):
+        inter = 1.0
         for ax in (0, 1):   # horizontal axes: need real overlap, not a touch
             ov = min(hi_a[ax], hi_b[ax]) - max(lo_a[ax], lo_b[ax])
             need = min(1.5, 0.4 * min(hi_a[ax] - lo_a[ax], hi_b[ax] - lo_b[ax]))
             if ov < need:
                 return False
+            inter *= ov
+        area_a = (hi_a[0] - lo_a[0]) * (hi_a[1] - lo_a[1])
+        area_b = (hi_b[0] - lo_b[0]) * (hi_b[1] - lo_b[1])
+        if inter / (area_a + area_b - inter) < min_iou:
+            return False
         return min(hi_a[2], hi_b[2]) >= max(lo_a[2], lo_b[2])  # z: contact ok
     merged = []
     for verts in stair_groups.values():
@@ -1077,6 +1135,26 @@ def rebuild_blocked_stairs(winner, grid, stair_groups):
         if climbs(stand_cells()):
             continue
 
+        # Landings: plate levels inside the well -- a stair tower has one per
+        # storey. Read them before the flights are cleared. The run below
+        # turns at each one, so its flights meet the landings instead of
+        # climbing straight past them (a tower with a landing every 3 cells
+        # was rebuilt as 6-rise flights, and its top flight overshot the last
+        # landing by one: a dead end a step too high to leave).
+        plate_bases = {CLASS_BLOCKS[c] for c in ("floor", "roof", "structure", "wall")}
+        landing_z = set()
+        for z in range(z0 + 1, z1 + 1):
+            n = 0
+            for x in range(x0, x1 + 1):
+                for y in range(y0, y1 + 1):
+                    w = winner.get(key(x, y, z))
+                    if (w is not None and w[1].split("[")[0] in plate_bases
+                            and winner.get(key(x, y, z + 1)) is None
+                            and winner.get(key(x, y, z + 2)) is None):
+                        n += 1
+            if n >= 2:
+                landing_z.add(z)
+
         # -- rebuild: clear the voxelized flights and stale railing fences
         for (x, y, z) in cells:
             if (x, y, z) not in protected:
@@ -1122,11 +1200,18 @@ def rebuild_blocked_stairs(winner, grid, stair_groups):
         col = min(range(s_lo, s_hi + 1), key=lane_cost)
 
         placed_cells = []
+        last_turn = False
         z = z0
         while z <= z1:
             cx, cy = (pos, col) if along_x else (col, pos)
             nxt = pos + forward
-            turning = nxt < lo or nxt > hi
+            # turn at the end of the well, or level with a landing (the cube
+            # there is flush with the landing plate, so the player can step
+            # off) -- but never twice in a row, which would only spin in place
+            at_landing = z in landing_z and placed_cells and \
+                placed_cells[-1][2] == z - 1 and not last_turn
+            turning = nxt < lo or nxt > hi or bool(at_landing)
+            last_turn = turning
             if turning:
                 b = STAIR_CUBE                      # landing corner
                 forward = -forward
@@ -1842,6 +1927,9 @@ def stamp_terrain_aprons(winner, grid, radius=7, max_door_z=9):
                         continue             # stay in-grid (key() aliases)
                     if key(cx, cy, top) in winner or key(cx, cy, top + 1) in winner:
                         continue             # never overwrite / never bury
+                    if any(key(cx, cy, top + j) in winner for j in range(2, 16)):
+                        continue             # under a floor is indoors, not site:
+                                             # a cone there is a dirt mound in a room
                     winner[key(cx, cy, top)] = (floor_prio, GRASS)
                     placed += 1
                     for d in (1, 2, 3):
@@ -1851,6 +1939,365 @@ def stamp_terrain_aprons(winner, grid, radius=7, max_door_z=9):
             if placed > n_before:
                 aproned += 1
     return aproned, placed
+
+
+
+def stamp_terrain(winner, grid, slope_tol_m=2.0, lowest_radius_m=5.0):
+    """A continuous ground surface: earth under the building, grade around it.
+
+    The IFC has no site, so the building floated over the export's flat
+    plane: under a wing whose lowest storey stands 6 m up the hill there was
+    nothing, and a floor plate that stops short of its facade -- every
+    diagonal wing -- dropped the player 7 m onto bare ground. Aprons
+    (stamp_terrain_aprons) ground single doors; this grounds the building.
+
+    Grade is read off the building itself:
+
+    * a column holding the LOWEST STOREY of its neighbourhood -- its lowest
+      block within `slope_tol_m` of the lowest block within `lowest_radius_m`
+      -- has ground right under that block. A canopy or bridge hanging over
+      lower ground fails that test and is not taken as grade, so the
+      covered space under it stays open;
+    * the outside cell of every exterior door has ground at its sill, which
+      is where the player steps out;
+    * the edge of the (padded) grid relaxes to the export's flat plane.
+
+    Everything else -- outside, courtyards, under canopies -- is the
+    harmonic interpolation between those (a Laplace solve; smooth, and never
+    above or below the constraints it meets). Each column is then filled
+    from the bottom up to that height, but never up to or past its own
+    lowest block: earth cannot enter a room, cover a door or bury a stair.
+    Grass where the top is open to the sky, dirt elsewhere.
+
+    Returns (columns filled, cells placed).
+    """
+    from scipy import ndimage
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.linalg import cg
+
+    X, plane, pitch = grid["X"], grid["plane"], grid["pitch"]
+    Y = plane // X
+    keys = np.fromiter(winner.keys(), dtype=np.int64, count=len(winner))
+    zs = keys // plane
+    rem = keys - zs * plane
+    ys = rem // X
+    xs = rem - ys * X
+    BIG = 1 << 30
+    low = np.full((X, Y), BIG, dtype=np.int64)          # lowest block per column
+    np.minimum.at(low, (xs, ys), zs)
+    top = np.full((X, Y), -1, dtype=np.int64)           # highest block per column
+    np.maximum.at(top, (xs, ys), zs)
+    footprint = low < BIG
+
+    # lowest storey of its neighbourhood -> grade under it
+    r = max(1, int(round(lowest_radius_m / pitch)))
+    yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
+    disk = (xx * xx + yy * yy) <= r * r
+    local_low = ndimage.minimum_filter(np.where(footprint, low, BIG), footprint=disk,
+                                       mode="constant", cval=BIG)
+    on_grade = footprint & (low <= local_low + max(1, int(round(slope_tol_m / pitch))))
+
+    fixed = np.zeros((X, Y), bool)
+    value = np.zeros((X, Y), float)
+    fixed[on_grade] = True
+    value[on_grade] = low[on_grade] - 1
+    # exterior doors: ground at the sill on the side that is open to the sky
+    F2G = {v: k for k, v in GRID_TO_FACING.items()}
+    doors = 0
+    for k, (_, b) in winner.items():
+        if "_door" not in b or "half=lower" not in b:
+            continue
+        z = k // plane
+        rr = k - z * plane
+        y, x = rr // X, rr - (rr // X) * X
+        dx, dy = F2G[b.split("facing=")[1].split(",")[0].rstrip("]")]
+        for sgn in (1, -1):
+            ox, oy = x + dx * sgn, y + dy * sgn
+            if not (0 <= ox < X and 0 <= oy < Y) or low[ox, oy] <= z + 1:
+                continue                     # a terrace or a room: not the site
+            if on_grade[ox, oy]:
+                continue                     # already pinned to its own underside
+            fixed[ox, oy] = True
+            value[ox, oy] = z - 1
+            doors += 1
+    # the padded edge meets the flat export plane one below the lowest block
+    edge = np.zeros((X, Y), bool)
+    edge[0, :] = edge[-1, :] = edge[:, 0] = edge[:, -1] = True
+    edge &= ~fixed
+    fixed |= edge
+    value[edge] = -1.0
+
+    # Laplace solve for the free cells: 4*h - sum(neighbours) = sum(fixed nbrs)
+    free = ~fixed
+    idx = -np.ones((X, Y), dtype=np.int64)
+    n = int(free.sum())
+    idx[free] = np.arange(n)
+    rows, cols, vals = [np.arange(n)], [np.arange(n)], [np.full(n, 4.0)]
+    rhs = np.zeros(n)
+    fx, fy = np.nonzero(free)
+    for ddx, ddy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        nx, ny = np.clip(fx + ddx, 0, X - 1), np.clip(fy + ddy, 0, Y - 1)
+        nb = idx[nx, ny]
+        is_free = nb >= 0
+        rows.append(idx[fx, fy][is_free])
+        cols.append(nb[is_free])
+        vals.append(-np.ones(int(is_free.sum())))
+        np.add.at(rhs, idx[fx, fy][~is_free], value[nx, ny][~is_free])
+    A = coo_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+                   shape=(n, n)).tocsr()
+    h0 = np.full(n, float(np.median(value[fixed])))
+    sol, info = cg(A, rhs, x0=h0, rtol=1e-6, maxiter=20000)
+    height = value.copy()
+    height[free] = sol
+    ground = np.floor(height + 0.5).astype(np.int64)
+    ground = np.minimum(ground, low - 1)                # never into the building
+
+    floor_prio = CLASS_PRIORITY.index("floor")
+    GRASS, DIRT = "minecraft:grass_block", "minecraft:dirt"
+    cols_filled = placed = 0
+    gx, gy = np.nonzero(ground >= 0)
+    for x, y in zip(gx.tolist(), gy.tolist()):
+        g = int(ground[x, y])
+        exposed = top[x, y] < g                          # nothing above the ground
+        any_placed = False
+        for z in range(0, g + 1):
+            k = x + X * y + plane * z
+            if k in winner:
+                continue                                 # an apron already here
+            winner[k] = (floor_prio, GRASS if (z == g and exposed) else DIRT)
+            placed += 1
+            any_placed = True
+        cols_filled += any_placed
+    return cols_filled, placed, {"door_anchors": doors, "grade_columns": int(on_grade.sum()),
+                                 "solver_converged": info == 0}
+
+def link_flight_tops(winner, grid, reach_m=3.0):
+    """Give every dead-ended flight a way off at the top.
+
+    A flight that climbs and then meets nothing is the most visible stair
+    defect left: the rebuilt run reaches the storey's height inside its
+    shaft, and the landing it should step onto is on the far side of the
+    shaft wall, or one block higher than the last tread. Walking the world
+    found 5 of 37 such flights at 1 m and 32 of 99 at 0.5 m.
+
+    For each stand cell on a top tread with no way off it (no standable
+    non-stair neighbour a player can move to), look along the 8 directions,
+    up to `reach_m`, for standable floor at the same height, one below or
+    one above. Carve the shortest such passage two cells high through
+    wall/glass/frame/structure (never a door, never inside a stair's
+    climbing envelope), pad a floor where there is none, and put an oriented
+    stair at the far end when the floor is one up. Returns flights linked.
+    """
+    X, plane, pitch = grid["X"], grid["plane"], grid["pitch"]
+    Y = plane // X
+    R = max(2, int(round(reach_m / pitch)))
+    stair_base = STAIR_SHAPED.split("[")[0]
+    stair_family = (STAIR_CUBE, stair_base)
+    carveable = {CLASS_BLOCKS[c] for c in
+                 ("wall", "floor", "structure", "roof", "frame", "glass", "other")}
+    floor_prio = CLASS_PRIORITY.index("floor")
+    stair_prio = CLASS_PRIORITY.index("stair")
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    def inb(x, y, z):
+        return 0 <= x < X and 0 <= y < Y and z >= 1
+
+    def block(x, y, z):
+        if not inb(x, y, z) and not (0 <= x < X and 0 <= y < Y):
+            return None
+        w = winner.get(key(x, y, z))
+        return None if w is None else w[1]
+
+    def base(b):
+        return None if b is None else b.split("[")[0]
+
+    def passable(x, y, z):
+        b = block(x, y, z)
+        return b is None or "_door" in b
+
+    def standable(x, y, z):
+        if not inb(x, y, z):
+            return False
+        b = block(x, y, z - 1)
+        return (b is not None and "_door" not in b and "_fence" not in b
+                and passable(x, y, z) and passable(x, y, z + 1))
+
+    def on_stair(x, y, z):
+        return base(block(x, y, z - 1)) in stair_family
+
+    DIRS = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if (dx, dy) != (0, 0)]
+
+    def has_exit(x, y, z):
+        for dx, dy in DIRS:
+            for dz in (0, -1, -2, -3, 1):
+                q = (x + dx, y + dy, z + dz)
+                if not standable(*q):
+                    continue
+                if dz == 1:
+                    walk = base(block(q[0], q[1], q[2] - 1)) == stair_base
+                    if not walk and not passable(x, y, z + 2):
+                        continue
+                if not on_stair(*q):
+                    return True
+                break
+        return False
+
+    def in_stair_envelope(x, y, z):
+        return any(base(block(x, y, z - j)) in stair_family for j in (1, 2, 3))
+
+    def passage_from(tx, ty, tz):
+        """Shortest straight passage off (tx, ty, tz): (cost, ..., dz) or None."""
+        best = None
+        # straight passages only: a diagonal one-cell cut is walkable to the
+        # audit but not to a player, whose box cannot pass two blocks that
+        # meet only at a corner
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            for kstep in range(1, R + 1):
+                px, py = tx + dx * kstep, ty + dy * kstep
+                if not (0 <= px < X and 0 <= py < Y):
+                    break
+                hit = None
+                for dz in (0, -1, 1):
+                    if standable(px, py, tz + dz) and not on_stair(px, py, tz + dz):
+                        hit = dz
+                        break
+                if hit is not None:
+                    cost = kstep + (2 if hit else 0)
+                    if best is None or cost < best[0]:
+                        best = (cost, tx, ty, tz, dx, dy, kstep, hit)
+                    break
+                # this cell must be carveable to pass through it
+                ok = True
+                for h in (0, 1):
+                    bb = block(px, py, tz + h)
+                    if bb is not None and ("_door" in bb or base(bb) not in carveable):
+                        ok = False
+                    if bb is not None and in_stair_envelope(px, py, tz + h):
+                        ok = False
+                # ...without taking anyone's floor: the head cell is the slab
+                # a storey above stands on when there is room to stand on it
+                if block(px, py, tz + 1) is not None and standable(px, py, tz + 2):
+                    ok = False
+                # ...or plugging anyone's walkway with the pad laid under it:
+                # an empty cell within two of something solid below is a
+                # player's body or head room (a pad that was the head cell of
+                # a 1-wide gap cut 2,602 cells of top-floor deck off at 1 m)
+                if block(px, py, tz - 1) is None and (
+                        block(px, py, tz - 2) is not None
+                        or block(px, py, tz - 3) is not None
+                        or in_stair_envelope(px, py, tz - 1)):
+                    ok = False
+                if not ok:
+                    break
+        return best
+
+    # flights: connected runs of tread stand cells that climb at least 2
+    on_treads = set()
+    for k, (_, b) in winner.items():
+        if base(b) not in stair_family:
+            continue
+        z = k // plane
+        rem = k - z * plane
+        y, x = rem // X, rem - (rem // X) * X
+        if standable(x, y, z + 1):
+            on_treads.add((x, y, z + 1))
+    flights = []
+    left = set(on_treads)
+    while left:
+        s0 = left.pop()
+        comp, todo = [s0], [s0]
+        while todo:
+            cx, cy, cz = todo.pop()
+            for dx, dy in DIRS:
+                for dz in (-1, 0, 1):
+                    q = (cx + dx, cy + dy, cz + dz)
+                    if q in left:
+                        left.discard(q)
+                        comp.append(q)
+                        todo.append(q)
+        zs = [c[2] for c in comp]
+        if max(zs) - min(zs) >= 2:
+            flights.append(comp)
+
+    linked = 0
+    for comp in flights:
+        ztop = max(c[2] for c in comp)
+        tops = [c for c in comp if c[2] == ztop]
+        if any(has_exit(*t) for t in tops):
+            continue
+        best = None
+        for (tx, ty, tz) in sorted(tops):
+            got = passage_from(tx, ty, tz)
+            if got is not None and (best is None or got[0] < best[0]):
+                best = got
+        if best is None:
+            continue
+        _, tx, ty, tz, dx, dy, kstep, dz = best
+        for i in range(1, kstep):
+            px, py = tx + dx * i, ty + dy * i
+            for h in (0, 1):
+                winner.pop(key(px, py, tz + h), None)
+            if winner.get(key(px, py, tz - 1)) is None:
+                winner[key(px, py, tz - 1)] = (floor_prio, FLOOR_CUBE)
+        if dz == 1:
+            # a step up onto the floor: make the last carved cell a stair
+            lx, ly = tx + dx * (kstep - 1), ty + dy * (kstep - 1)
+            g = (dx if abs(dx) >= abs(dy) else 0, dy if abs(dy) > abs(dx) else 0)
+            facing = GRID_TO_FACING.get(g, "north")
+            if kstep > 1:
+                winner[key(lx, ly, tz)] = (
+                    stair_prio, f"{STAIR_SHAPED}[facing={facing},half=bottom,shape=straight]")
+                for h in (1, 2):
+                    winner.pop(key(lx, ly, tz + h), None)
+        linked += 1
+    return linked
+
+
+def cap_stacked_doors(winner, grid):
+    """Close the doorway above the door: a header, not an open transom.
+
+    A Minecraft door is two blocks tall and a player fits under two blocks at
+    any pitch, but a 2 m doorway is door_h = 4 cells at 0.5 m. The passage is
+    cut 4 cells tall and the door fills the bottom two, so every doorway had
+    a two-cell hole over it looking into the next room. Each cell of the
+    doorway above the upper half -- empty, or a stray door half -- becomes
+    the most common wall-like block beside it at that height (concrete in a
+    wall, glass in a curtain wall). Identical at 1 m, where a doorway is
+    exactly two cells. Returns cells capped.
+    """
+    X, plane = grid["X"], grid["plane"]
+    Y = plane // X
+    header_ok = {CLASS_BLOCKS[c] for c in ("wall", "glass", "frame", "structure", "other")}
+    door_h = max(2, round(2.0 / grid["pitch"]))   # the doorway the passage was cut to
+    capped = 0
+    for k, (_, b) in list(winner.items()):
+        if "_door" not in b or "half=lower" not in b:
+            continue
+        z = k // plane
+        rem = k - z * plane
+        y, x = rem // X, rem - (rem // X) * X
+        j = 2
+        while j < door_h:
+            kk = x + X * y + plane * (z + j)
+            w = winner.get(kk)
+            if w is not None and "_door" not in w[1]:
+                break                       # the wall already closes it
+            votes = Counter()
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < X and 0 <= ny < Y:
+                    n = winner.get(nx + X * ny + plane * (z + j))
+                    if n is not None and n[1] in header_ok:
+                        votes[n[1]] += 1
+            if not votes:
+                break                       # nothing beside it: not a wall opening
+            blk = votes.most_common(1)[0][0]
+            winner[kk] = (CLASS_PRIORITY.index("wall"), blk)
+            capped += 1
+            j += 1
+    return capped
 
 
 def light_ceilings(winner, grid, spacing=6):
@@ -1884,7 +2331,9 @@ def light_ceilings(winner, grid, spacing=6):
         # k must be a support with 2-air walking space above
         if key(x, y, z + 1) in winner or key(x, y, z + 2) in winner:
             continue
-        for j in (3, 4):
+        # the ceiling is a storey's height up: 3-4 cells at 1 m, 6-8 at 0.5 m
+        # (searching only 3-4 cells at 0.5 m placed no lanterns at all)
+        for j in range(3, max(4, int(round(4.0 / grid["pitch"]))) + 1):
             ck = key(x, y, z + j)
             w = winner.get(ck)
             if w is None:
@@ -1896,7 +2345,70 @@ def light_ceilings(winner, grid, spacing=6):
     return lit
 
 
-def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
+def unify_plate_surfaces(winner, grid, rounds=3):
+    """Give floor and ceiling surfaces one material where walls poke into them.
+
+    Walls and columns are modelled from the bottom of the slab, and at 1 m
+    they outrank the floor class (CLASS_PRIORITY), so the top layer of every
+    floor plate is speckled with wall concrete wherever a wall foot, a
+    threshold or a column base lands in it -- 17% of all standing surfaces
+    on UNBC, and the same again on the ceilings. In first person that reads
+    as a patchwork floor, not as walls.
+
+    A wall/structure cell is a SURFACE cell when the cell above it (a floor)
+    or below it (a ceiling) is empty. It is recoloured to the plate's own
+    block when at least two of its four horizontal neighbours already carry
+    a plate block (floor or roof) -- so a wall run's lintel or a parapet,
+    whose neighbours along the run are wall, keeps its wall. Repeated a few
+    rounds so a two-cell-wide patch fills from its edges.
+
+    Changes material only, never occupancy: no cell is added or removed,
+    so walkability, doors and stairs cannot change. Returns cells recoloured.
+    """
+    X, plane = grid["X"], grid["plane"]
+    patchy = {CLASS_BLOCKS["wall"], CLASS_BLOCKS["structure"]}
+    plate = {CLASS_BLOCKS["floor"]: "floor", CLASS_BLOCKS["roof"]: "roof"}
+
+    def key(x, y, z):
+        return int(x) + X * int(y) + plane * int(z)
+
+    def unkey(k):
+        z = k // plane
+        rem = k - z * plane
+        return rem - (rem // X) * X, rem // X, z
+
+    def in_bounds(x, y):
+        # packed keys wrap out-of-range x/y onto real cells (LESSONS S13)
+        return 0 <= x < X and 0 <= y < grid["plane"] // X
+
+    total = 0
+    for _ in range(rounds):
+        changes = {}
+        for k, w in winner.items():
+            if w[1] not in patchy:
+                continue
+            x, y, z = unkey(k)
+            if key(x, y, z + 1) in winner and (z == 0 or key(x, y, z - 1) in winner):
+                continue   # buried: not a surface anyone sees
+            votes = Counter()
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if not in_bounds(nx, ny):
+                    continue
+                n = winner.get(key(nx, ny, z))
+                if n is not None and n[1] in plate:
+                    votes[n[1]] += 1
+            if sum(votes.values()) >= 2:
+                block = votes.most_common(1)[0][0]
+                changes[k] = (CLASS_PRIORITY.index(plate[block]), block)
+        if not changes:
+            break
+        winner.update(changes)
+        total += len(changes)
+    return total
+
+
+def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60, refresh_every=8):
     """Phase-2 rectification: reconnect walkable islands with short corridors.
 
     After per-wing rotation (--rectify) the joints between a rotated wing
@@ -1983,8 +2495,9 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
                         out.append((x + dx, y + dy, z))
         return out
 
-    def bfs(starts):
-        seen = set(starts)
+    def bfs(starts, seen=None):
+        seen = set(starts) if seen is None else seen
+        seen.update(starts)
         queue = list(starts)
         while queue:
             x, y, z = queue.pop()
@@ -2000,16 +2513,13 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
     # far-from-everything island each iteration made the pass quadratic
     # once terrain aprons added many isolated grass islands
     hopeless: dict = {}
-    for _round in range(max_links + 8):   # one link per round (re-BFS between)
-        reach = bfs(seeds())
-        if not reach:
-            break
+    def find_islands():
         unreached = set()
         for k in list(winner.keys()):
             x, y, z = unkey(k)
             if (x, y, z + 1) not in reach and standable(x, y, z + 1):
                 unreached.add((x, y, z + 1))
-        islands = []
+        found = []
         left = set(unreached)
         while left:
             s = left.pop()
@@ -2023,10 +2533,32 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
                         comp.append(n)
                         queue.append(n)
             if len(comp) >= min_component:
-                islands.append(comp)
+                found.append(comp)
+        found.sort(key=len, reverse=True)
+        return found
+
+    # Walk the building once per `refresh_every` links, not once per link. Each round used to
+    # re-walk every standable cell and re-label every island from scratch to
+    # pick up the one corridor it had just carved: fine at 1 m, hours at
+    # 0.5 m with terrain (millions of stand cells, up to 68 rounds). Between
+    # refreshes the walk is extended from the cells around each new corridor,
+    # and an island any of whose cells has become reachable is dropped.
+    reach = set()
+    islands = None
+    for _round in range(max_links + 8):   # one link per round
+        if islands is not None and _round % refresh_every:
+            islands = [c for c in islands if not any(p in reach for p in c)]
+        else:
+            # Carving can also TAKE connectivity away -- a corridor popped
+            # through a cell another floor stood on -- so an incremental reach
+            # goes stale. Measured at 1 m: never refreshing lost 518 reachable
+            # cells (94% -> 93%); a full re-walk every few links does not.
+            reach = bfs(seeds())
+            if not reach:
+                break
+            islands = find_islands()
         if not islands:
             break
-        islands.sort(key=len, reverse=True)
 
         linked = False
         glass_block = CLASS_BLOCKS["glass"]
@@ -2214,6 +2746,11 @@ def stitch_seams(winner, grid, max_span=14, min_component=30, max_links=60):
                         "floor_pads": pads, "carved": dict(carved_kinds)})
             built += 1
             linked = True
+            # extend the walk from the new corridor's ends and its cells
+            starts = [(rx, ry, rz), (ix, iy, iz)] + [(px, py, rz) for (px, py, _, _) in cells]
+            starts = [c for c in starts if standable(*c)]
+            reach |= {c for c in starts if c in reach or c == (rx, ry, rz)}
+            bfs([c for c in starts if c in reach], seen=reach)
             # count the attempt: an island that needs a THIRD corridor is
             # one whose links carve but never connect - stop feeding it
             hopeless[sig] = hopeless.get(sig, 0) + 1
@@ -2445,6 +2982,91 @@ def self_test() -> int:
     if len(mf) != 1 or np.allclose(mv, inner):
         failures.append("an element wholly inside a wing should move whole, unsubdivided")
 
+    # Surface unification: a slab at z=2 with a wall foot speckled into its top
+    # surface, and a wall run (x=5..9, y=10) standing on the slab with a lintel
+    # cell over an opening. The speckle takes the floor's block; the wall run,
+    # the lintel and every cell's occupancy stay exactly as they were.
+    wall = (CLASS_PRIORITY.index("wall"), CLASS_BLOCKS["wall"])
+    plate_world = {key(x, y, 2): floor for x in range(2, 12) for y in range(2, 12)}
+    plate_world[key(4, 4, 2)] = wall                       # speckle in the floor
+    for x in range(5, 10):
+        for z in (3, 4, 5):
+            if not (x == 7 and z in (3, 4)):               # an opening under a lintel
+                plate_world[key(x, 10, z)] = wall
+    before_keys = set(plate_world)
+    unify_plate_surfaces(plate_world, grid)
+    if plate_world[key(4, 4, 2)][1] != CLASS_BLOCKS["floor"]:
+        failures.append("a wall cell speckled into a floor surface should take the floor block")
+    if plate_world[key(7, 10, 5)][1] != CLASS_BLOCKS["wall"]:
+        failures.append("a lintel in a wall run must keep its wall block")
+    if any(plate_world[key(x, 10, 4)][1] != CLASS_BLOCKS["wall"] for x in (5, 6, 8, 9)):
+        failures.append("a wall standing on the slab must keep its wall block")
+    if set(plate_world) != before_keys:
+        failures.append("surface unification must never add or remove a cell")
+
+    # Terrain: a storey slab at z=3 (x,y 4..15) with a 2x2 hole at (9..10, 9..10)
+    # under a ceiling at z=7; a canopy at z=6 over the open ground beside it
+    # (x 16..18) with an exterior door at z=1 under it, facing east.
+    tg = {"X": X, "plane": X * Y, "dims": (X, Y, 12), "pitch": 1.0}
+    terra = {}
+    for x in range(4, 16):
+        for y in range(4, 16):
+            terra[key(x, y, 7)] = floor
+            if not (9 <= x <= 10 and 9 <= y <= 10):
+                terra[key(x, y, 3)] = floor
+    for x in range(16, 19):
+        for y in range(8, 12):
+            terra[key(x, y, 6)] = roof
+    door_lo = (CLASS_PRIORITY.index("other"), "minecraft:oak_door[facing=east,half=lower]")
+    terra[key(15, 10, 1)] = door_lo
+    building = dict(terra)
+    stamp_terrain(terra, tg, lowest_radius_m=3.0)
+    added = {k for k in terra if k not in building}
+
+    def col_low(x, y):
+        return min((k // (X * Y) for k in building if k % (X * Y) == x + X * y), default=99)
+    if any((k // (X * Y)) >= col_low(k % X, (k % (X * Y)) // X) for k in added):
+        failures.append("terrain filled a column up to or past its own lowest block")
+    if key(9, 9, 2) not in terra:
+        failures.append("a hole in a grade-level slab should have earth under it")
+    if any(key(17, 10, z) in terra for z in range(2, 6)):
+        failures.append("terrain buried the open space under a canopy")
+    if key(16, 10, 0) not in terra or key(16, 10, 1) in terra:
+        failures.append("the ground outside an exterior door should meet its sill")
+    if any(key(0, y, z) in terra for y in range(Y) for z in range(12)):
+        failures.append("terrain at the grid edge should sit on the flat export plane")
+
+    # A flight climbing east (x 2..6, y=5, z 1..5) inside a shaft; its top tread
+    # at (6,5,5) meets a shaft wall at x=7 with the storey floor beyond at z=5.
+    fl = {}
+    stair_b = (CLASS_PRIORITY.index("stair"), f"{STAIR_SHAPED}[facing=east,half=bottom,shape=straight]")
+    for i in range(5):
+        fl[key(2 + i, 5, 1 + i)] = stair_b
+    for x in range(8, 14):
+        for y in range(3, 8):
+            fl[key(x, y, 5)] = floor
+    for z in range(4, 9):
+        for y in range(3, 8):
+            fl[key(7, y, z)] = wall
+    fl[key(7, 6, 6)] = (CLASS_PRIORITY.index("other"), "minecraft:oak_door[facing=east,half=lower]")
+    # a 4-cell doorway (0.5 m) keeps one lower + one upper half; the rest is header
+    tg05 = dict(tg, pitch=0.5)
+    dd = {key(3, 3, 1 + j): (100, "minecraft:oak_door[facing=east,half=" +
+                              ("lower" if j == 0 else "upper") + "]") for j in range(4)}
+    for j in range(4):
+        dd[key(3, 2, 1 + j)] = dd[key(3, 4, 1 + j)] = wall
+    cap_stacked_doors(dd, tg05)
+    if ("half=lower" not in dd[key(3, 3, 1)][1] or "half=upper" not in dd[key(3, 3, 2)][1]
+            or any("_door" in dd[key(3, 3, z)][1] for z in (3, 4))
+            or dd[key(3, 3, 3)][1] != CLASS_BLOCKS["wall"]):
+        failures.append("a 4-cell doorway should keep one door and a header above it")
+
+    n_linked = link_flight_tops(fl, tg)
+    if n_linked != 1 or key(7, 5, 6) in fl or key(7, 5, 7) in fl:
+        failures.append(f"a flight topping out at a shaft wall should be cut through it ({n_linked})")
+    if key(7, 6, 6) not in fl:
+        failures.append("linking a flight must never remove a door")
+
     if failures:
         print("self-test FAILED")
         for line in failures:
@@ -2486,6 +3108,10 @@ def main() -> None:
                          "drawings (REVITER.md 2j); kept because a stretched "
                          "plate may still be walkable where a torn one is a "
                          "canyon. Implies --rectify")
+    ap.add_argument("--no-terrain", action="store_true",
+                    help="skip stamp_terrain: leave the building floating over the export's flat plane")
+    ap.add_argument("--terrain-margin", type=float, default=16.0, metavar="METRES",
+                    help="plan margin around the model for terrain to slope away in (default 16)")
     ap.add_argument("--floor-slabs", action="store_true",
                     help="convert thin single-voxel floor plates to bottom slabs (default: full cubes)")
     ap.add_argument("--fill", action="store_true",
@@ -2529,7 +3155,9 @@ def main() -> None:
     print(f"Door elements: {ex_stats['door_elements']}", flush=True)
 
     print(f"Voxelizing at pitch={args.pitch} m ...", flush=True)
-    winner, grid, per_class = voxelize_solids(meshes, door_verts, args.pitch, args.fill)
+    winner, grid, per_class = voxelize_solids(
+        meshes, door_verts, args.pitch, args.fill,
+        margin_m=0.0 if args.no_terrain else args.terrain_margin)
     placed, door_records = place_doors(winner, grid, door_verts, args.doors,
                                        overrides.get("doors"))
     print(f"Placed {placed} {args.doors} doors", flush=True)
@@ -2552,10 +3180,22 @@ def main() -> None:
           f"through their hallway door, {rooms_left} remain sealed", flush=True)
     holes_filled = patch_floor_holes(winner, grid)
     print(f"Patched {holes_filled} floor-plate pothole cells", flush=True)
-    doors_grounded, terrain_cells = stamp_terrain_aprons(winner, grid)
+    # Geometric thresholds are in METRES and scale with pitch; anything about
+    # the player (headroom, step height) stays in blocks.
+    per_m = 1.0 / args.pitch
+    doors_grounded, terrain_cells = stamp_terrain_aprons(
+        winner, grid, max_door_z=int(round(9 * per_m)))
     print(f"Grounded {doors_grounded} exterior door sides with terrain aprons "
           f"({terrain_cells} grass/dirt cells)", flush=True)
-    seams_built, seam_cells, seam_log = stitch_seams(winner, grid)
+    terrain_cols = terrain_cells_all = 0
+    terrain_info = {}
+    if not args.no_terrain:
+        terrain_cols, terrain_cells_all, terrain_info = stamp_terrain(winner, grid)
+        print(f"Stamped terrain under {terrain_cols} columns ({terrain_cells_all} cells; "
+              f"{terrain_info})", flush=True)
+    seams_built, seam_cells, seam_log = stitch_seams(
+        winner, grid, max_span=int(round(14 * per_m)),
+        min_component=int(round(30 * per_m * per_m)))
     print(f"Stitched {seams_built} seam corridors ({seam_cells} cells)", flush=True)
     seam_walls = close_seam_walls(winner, grid, wings, seam_log)
     if wings:
@@ -2569,9 +3209,19 @@ def main() -> None:
     print(f"Capped {capped} interior cells that were open to the sky", flush=True)
     lanterns = light_ceilings(winner, grid)
     print(f"Recessed {lanterns} ceiling sea lanterns for interior light", flush=True)
+    # Last of the passes that move cells: run before it, the capping and the
+    # lighting re-decided around the new passages and the 1 m build LOST
+    # 705 reachable cells and a well; run after them it gains.
+    flights_linked = link_flight_tops(winner, grid)
+    print(f"Linked {flights_linked} dead-ended flight tops to their storey", flush=True)
+    surfaces_unified = unify_plate_surfaces(winner, grid)
+    print(f"Unified {surfaces_unified} wall-speckled floor/ceiling surface cells", flush=True)
     if args.floor_slabs:
         slabs_converted = refine_floor_slabs(winner, grid)
         print(f"Refined {slabs_converted} thin floor cubes -> slabs", flush=True)
+    door_headers = cap_stacked_doors(winner, grid)
+    if door_headers:
+        print(f"Capped {door_headers} stacked door cells with headers", flush=True)
     fences_connected = refine_fences(winner, grid)
     print(f"Connected {fences_connected} railing fences", flush=True)
 
@@ -2622,7 +3272,13 @@ def main() -> None:
         "floor_holes_patched": holes_filled,
         "envelope_capped": capped,
         "doors_grounded": doors_grounded,
+        "terrain_columns": terrain_cols,
+        "terrain_cells": terrain_cells_all,
+        "terrain": terrain_info,
         "ceiling_lanterns": lanterns,
+        "surfaces_unified": surfaces_unified,
+        "flights_linked": flights_linked,
+        "door_headers": door_headers,
         "seam_corridors": seams_built,
         "seam_wall_cells": seam_walls,
         "slabs_converted": slabs_converted,

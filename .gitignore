@@ -49,6 +49,7 @@ Thumbs.db
 /renderers/mcweb/**/*.zip
 # ...except the committed 1 m world snapshot the GitHub Pages deploy serves
 !/renderers/mcweb/unbc_world.zip
+!/renderers/mcweb/unbc_world_0p5m.zip
 # render/ working files (three copies, baked scene, live screenshots).
 # Committed proof images live in renderers/mcweb/docs/, not here.
 /renderers/mcweb/render/three*.js
